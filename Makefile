@@ -1,7 +1,7 @@
 # Makefile for remote_bridge
 
 CC = gcc
-CFLAGS = -O3 -march=armv8-a -mtune=cortex-a53 -Wall -Wextra
+CFLAGS = -O3 -Wall -Wextra
 TARGET = remote_bridge
 SOURCE = remote_bridge.c
 
@@ -17,10 +17,9 @@ clean:
 
 install: $(TARGET)
 	@echo "Installing remote_bridge..."
-	sudo cp $(TARGET) /usr/local/bin/
-	sudo chmod +x /usr/local/bin/$(TARGET)
+     	sudo install -m 755 $(TARGET) /usr/local/bin/
 	@echo "Installing systemd service..."
-	sudo cp remote-bridge.service /etc/systemd/system/
+	sudo install -m 755 $(TARGET) /usr/local/bin/
 	sudo systemctl daemon-reload
 	@echo ""
 	@echo "Installation complete!"
