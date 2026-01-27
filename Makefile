@@ -26,6 +26,8 @@ install: $(TARGET)
 	@echo "Configure /etc/remote-bridge.conf and then run:"
 	@echo "  sudo systemctl enable remote-bridge"
 	@echo "  sudo systemctl start remote-bridge"
+	@echo "To follow logs:"
+	@echo "  sudo journalctl -u remote-bridge -f"
 
 uninstall:
 	@echo "Stopping and disabling service..."
