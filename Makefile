@@ -18,6 +18,8 @@ clean:
 install: $(TARGET)
 	@echo "Installing remote_bridge..."
 	sudo install -m 755 $(TARGET) /usr/local/bin/
+	@echo "Creating dedicated user..."
+	sudo useradd -r -s /usr/sbin/nologin -g input -d /nonexistent remote-bridge 2>/dev/null || true
 	@echo "Installing systemd service..."
 	sudo install -m 644 remote-bridge.service /etc/systemd/system/
 	sudo systemctl daemon-reload
@@ -36,4 +38,6 @@ uninstall:
 	sudo rm -f /etc/systemd/system/remote-bridge.service
 	sudo rm -f /usr/local/bin/$(TARGET)
 	sudo systemctl daemon-reload
+	@echo "Removing dedicated user..."
+	-sudo userdel remote-bridge 2>/dev/null
 	@echo "Uninstall complete!"
