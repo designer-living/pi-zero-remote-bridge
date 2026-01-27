@@ -17,9 +17,9 @@ clean:
 
 install: $(TARGET)
 	@echo "Installing remote_bridge..."
-     	sudo install -m 755 $(TARGET) /usr/local/bin/
-	@echo "Installing systemd service..."
 	sudo install -m 755 $(TARGET) /usr/local/bin/
+	@echo "Installing systemd service..."
+	sudo install -m 644 remote-bridge.service /etc/systemd/system/
 	sudo systemctl daemon-reload
 	@echo ""
 	@echo "Installation complete!"
