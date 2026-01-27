@@ -1,0 +1,20 @@
+[Unit]
+Description=Remote Bridge - IR Remote to Network Bridge
+After=network.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/remote-bridge.conf
+ExecStart=/usr/local/bin/remote_bridge "${REMOTE_NAME}" ${SERVER_IP} ${SERVER_PORT}
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=remote-bridge
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
