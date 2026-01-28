@@ -19,10 +19,12 @@ install: $(TARGET)
 	@echo "Installing remote_bridge..."
 	sudo install -m 755 $(TARGET) /usr/local/bin/
 	@echo "Creating dedicated user..."
-	sudo useradd -r -s /usr/sbin/nologin -g input -d /nonexistent remote-bridge 2>/dev/null || true
+	(id -u remote-bridge >/dev/null 2>&1 || sudo useradd -r -s /usr/sbin/nologin -d /nonexistent remote-bridge) && sudo usermod -aG input remote-bridge
 	@echo "Installing systemd service..."
 	sudo install -m 644 remote-bridge.service /etc/systemd/system/
 	sudo systemctl daemon-reload
+	@echo "Installing configuration file..."
+	if [ ! -f /etc/remote-bridge.conf ]; then sudo install -m 644 remote-bridge.conf /etc/remote-bridge.conf; else echo "Configuration file /etc/remote-bridge.conf already exists, skipping."; fi
 	@echo ""
 	@echo "Installation complete!"
 	@echo "Configure /etc/remote-bridge.conf and then run:"
@@ -39,5 +41,8 @@ uninstall:
 	sudo rm -f /usr/local/bin/$(TARGET)
 	sudo systemctl daemon-reload
 	@echo "Removing dedicated user..."
-	-sudo userdel remote-bridge 2>/dev/null
+	-id -u remote-bridge >/dev/null 2>&1 && sudo userdel remote-bridge
+	@echo ""
+	@echo "Note: The configuration file at /etc/remote-bridge.conf was not removed."
+	@echo "To remove it, run: sudo rm /etc/remote-bridge.conf"
 	@echo "Uninstall complete!"
