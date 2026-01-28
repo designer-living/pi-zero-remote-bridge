@@ -1,4 +1,4 @@
-# Remote Bridge - Installation & Usage Guide
+# Remote Bridge - Setup Guide
 
 ## Quick Setup
 
@@ -7,25 +7,37 @@
 make
 ```
 
-### 2. Configure
-Edit the configuration file and set your remote name, server IP, and port:
-```bash
-sudo nano remote-bridge.conf
-```
-
-Find your remote name by running:
+### 2. Find Your Remote Name
+Run evtest to find your IR receiver's exact name:
 ```bash
 sudo evtest
 ```
 Look for your IR receiver in the list and copy the exact name.
 
-### 3. Install
+### 3. Configure
+Edit the configuration file and set your remote name, server IP, and port:
 ```bash
-sudo cp remote-bridge.conf /etc/
+nano remote-bridge.conf
+```
+
+**Important**: Make sure to set all three values correctly:
+- REMOTE_NAME: The exact name from evtest (in quotes)
+- SERVER_IP: Your server's IP address
+- SERVER_PORT: Your server's port number
+
+### 4. Install
+**Copy the config file first, then install:**
+```bash
+sudo cp remote-bridge.conf /etc/remote-bridge.conf
 make install
 ```
 
-### 4. Start the Service
+This will:
+- Install the binary to `/usr/local/bin/`
+- Create a dedicated `remote-bridge` system user (no login, member of `input` group)
+- Install and configure the systemd service
+
+### 5. Start the Service
 ```bash
 sudo systemctl enable remote-bridge
 sudo systemctl start remote-bridge

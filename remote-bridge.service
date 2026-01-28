@@ -4,7 +4,7 @@ After=network.target
 
 [Service]
 Type=simple
-User=nobody
+User=remote-bridge
 Group=input
 EnvironmentFile=/etc/remote-bridge.conf
 ExecStart=/usr/local/bin/remote_bridge "${REMOTE_NAME}" ${SERVER_IP} ${SERVER_PORT}
