@@ -100,6 +100,9 @@ int main(int argc, char *argv[]) {
 
     int evfd = -1;
 
+    printf("Waiting for remote matching \"%s\"...\n", remote_name);
+    fflush(stdout);
+
     /* Initial scan (remote may already be connected) */
     DIR *d = opendir(INPUT_DIR);
     struct dirent *ent;
@@ -114,14 +117,6 @@ int main(int argc, char *argv[]) {
         }
     }
     closedir(d);
-
-    if (evfd >= 0) {
-        printf("Remote connected\n");
-        fflush(stdout);
-    }
-
-    printf("Waiting for remote matching \"%s\"...\n", remote_name);
-    fflush(stdout);
 
     struct pollfd fds[2];
     struct input_event ev;
