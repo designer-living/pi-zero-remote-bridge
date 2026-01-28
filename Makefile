@@ -26,10 +26,13 @@ install: $(TARGET)
 	@echo "Installing configuration file..."
 	if [ ! -f /etc/remote-bridge.conf ]; then sudo install -m 644 remote-bridge.conf /etc/remote-bridge.conf; else echo "Configuration file /etc/remote-bridge.conf already exists, skipping."; fi
 	@echo ""
-	@echo "Installation complete!"
-	@echo "Configure /etc/remote-bridge.conf and then run:"
-	@echo "  sudo systemctl enable remote-bridge"
-	@echo "  sudo systemctl start remote-bridge"
+	@echo "Installation complete! Enabling and starting service..."
+	sudo systemctl enable remote-bridge
+	sudo systemctl start remote-bridge
+	@echo ""
+	@echo "Service 'remote-bridge' has been enabled and started."
+	@echo "If necessary, configure /etc/remote-bridge.conf and then restart the service:"
+	@echo "  sudo systemctl restart remote-bridge"
 	@echo "To follow logs:"
 	@echo "  sudo journalctl -u remote-bridge -f"
 
