@@ -42,6 +42,7 @@ static int matches_device(int fd, const char *target) {
 
     if (strcmp(name, target) == 0) {
         printf("Matched device: %s\n", name);
+        fflush(stdout);
         return 1;
     }
 
@@ -99,6 +100,9 @@ int main(int argc, char *argv[]) {
 
     int evfd = -1;
 
+    printf("Waiting for remote matching \"%s\"...\n", remote_name);
+    fflush(stdout);
+
     /* Initial scan (remote may already be connected) */
     DIR *d = opendir(INPUT_DIR);
     struct dirent *ent;
@@ -113,11 +117,6 @@ int main(int argc, char *argv[]) {
         }
     }
     closedir(d);
-
-    if (evfd >= 0)
-        printf("Remote connected\n");
-
-    printf("Waiting for remote matching \"%s\"...\n", remote_name);
 
     struct pollfd fds[2];
     struct input_event ev;
@@ -157,6 +156,7 @@ int main(int argc, char *argv[]) {
                         break;
                     if (errno == ENODEV) {
                         printf("Remote disconnected\n");
+                        fflush(stdout);
                         close(evfd);
                         evfd = -1;
                         break;
@@ -203,8 +203,10 @@ int main(int argc, char *argv[]) {
                              INPUT_DIR "/%s", ie->name);
 
                     evfd = try_open_device(path, remote_name);
-                    if (evfd >= 0)
+                    if (evfd >= 0) {
                         printf("Remote connected\n");
+                        fflush(stdout);
+                    }
                 }
 
                 p += sizeof(*ie) + ie->len;
