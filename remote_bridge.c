@@ -74,6 +74,9 @@ int main(int argc, char *argv[]) {
     const char *server_ip   = argv[2];
     int server_port         = atoi(argv[3]);
 
+    printf("Connecting to %s:%d\n", server_ip, server_port);
+    fflush(stdout);
+
     /* UDP socket */
     int sock = socket(AF_INET, SOCK_DGRAM, 0);
     if (sock < 0) {
