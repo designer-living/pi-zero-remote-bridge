@@ -19,32 +19,68 @@ install: $(TARGET)
 	@echo "Installing remote_bridge..."
 	sudo install -m 755 $(TARGET) /usr/local/bin/
 	@echo "Creating dedicated user..."
-	(id -u remote-bridge >/dev/null 2>&1 || sudo useradd -r -s /usr/sbin/nologin -d /nonexistent remote-bridge) && sudo usermod -aG input remote-bridge
-	@echo "Installing systemd service..."
-	sudo install -m 644 remote-bridge.service /etc/systemd/system/
-	sudo systemctl daemon-reload
-	@echo "Installing configuration file..."
-	if [ ! -f /etc/remote-bridge.conf ]; then sudo install -m 644 remote-bridge.conf /etc/remote-bridge.conf; else echo "Configuration file /etc/remote-bridge.conf already exists, skipping."; fi
-	@echo ""
-	@echo "Installation complete! Enabling and starting service..."
-	sudo systemctl enable remote-bridge
-	sudo systemctl start remote-bridge
-	@echo ""
-	@echo "Service 'remote-bridge' has been enabled and started."
-	@echo "If necessary, configure /etc/remote-bridge.conf and then restart the service:"
-	@echo "  sudo systemctl restart remote-bridge"
-	@echo "To follow logs:"
-	@echo "  sudo journalctl -u remote-bridge -f"
+	@if command -v useradd >/dev/null 2>&1; then \
+		id -u remote-bridge >/dev/null 2>&1 || sudo useradd -r -s /usr/sbin/nologin -d /nonexistent -M remote-bridge; \
+		sudo usermod -aG input remote-bridge; \
+	else \
+		sudo addgroup -S input 2>/dev/null || true; \
+		id -u remote-bridge >/dev/null 2>&1 || sudo adduser -S -D -H -G input -s /sbin/nologin remote-bridge; \
+	fi
+	@if [ ! -f /etc/remote-bridge.conf ]; then \
+		echo "Installing configuration file..."; \
+		sudo install -m 644 remote-bridge.conf /etc/remote-bridge.conf; \
+	else \
+		echo "Configuration file /etc/remote-bridge.conf already exists, skipping."; \
+	fi
+	@if command -v systemctl >/dev/null 2>&1 && systemctl --version >/dev/null 2>&1; then \
+		echo "Installing systemd service..."; \
+		sudo install -m 644 remote-bridge.service /etc/systemd/system/; \
+		sudo systemctl daemon-reload; \
+		echo "Enabling and starting service..."; \
+		sudo systemctl enable remote-bridge; \
+		sudo systemctl start remote-bridge; \
+		echo ""; \
+		echo "Service 'remote-bridge' has been enabled and started."; \
+		echo "If necessary, configure /etc/remote-bridge.conf and then restart the service:"; \
+		echo "  sudo systemctl restart remote-bridge"; \
+		echo "To follow logs:"; \
+		echo "  sudo journalctl -u remote-bridge -f"; \
+	elif command -v rc-update >/dev/null 2>&1; then \
+		echo "Installing OpenRC service..."; \
+		sudo install -m 755 remote-bridge.initd /etc/init.d/remote-bridge; \
+		echo "Enabling and starting service..."; \
+		sudo rc-update add remote-bridge default; \
+		sudo rc-service remote-bridge start || true; \
+		echo ""; \
+		echo "Service 'remote-bridge' has been enabled and started."; \
+		echo "If necessary, configure /etc/remote-bridge.conf and then restart the service:"; \
+		echo "  sudo rc-service remote-bridge restart"; \
+		echo "To follow logs:"; \
+		echo "  tail -f /var/log/remote-bridge.log"; \
+	else \
+		echo "WARNING: Could not detect init system (systemd or OpenRC)."; \
+		echo "Please install the service manually."; \
+	fi
 
 uninstall:
 	@echo "Stopping and disabling service..."
-	-sudo systemctl stop remote-bridge
-	-sudo systemctl disable remote-bridge
-	sudo rm -f /etc/systemd/system/remote-bridge.service
+	@if command -v systemctl >/dev/null 2>&1 && systemctl --version >/dev/null 2>&1; then \
+		sudo systemctl stop remote-bridge || true; \
+		sudo systemctl disable remote-bridge || true; \
+		sudo rm -f /etc/systemd/system/remote-bridge.service; \
+		sudo systemctl daemon-reload; \
+	elif command -v rc-update >/dev/null 2>&1; then \
+		sudo rc-service remote-bridge stop || true; \
+		sudo rc-update del remote-bridge default || true; \
+		sudo rm -f /etc/init.d/remote-bridge; \
+	fi
 	sudo rm -f /usr/local/bin/$(TARGET)
-	sudo systemctl daemon-reload
 	@echo "Removing dedicated user..."
-	-id -u remote-bridge >/dev/null 2>&1 && sudo userdel remote-bridge
+	@if command -v userdel >/dev/null 2>&1; then \
+		id -u remote-bridge >/dev/null 2>&1 && sudo userdel remote-bridge || true; \
+	elif command -v deluser >/dev/null 2>&1; then \
+		id -u remote-bridge >/dev/null 2>&1 && sudo deluser remote-bridge || true; \
+	fi
 	@echo ""
 	@echo "Note: The configuration file at /etc/remote-bridge.conf was not removed."
 	@echo "To remove it, run: sudo rm /etc/remote-bridge.conf"

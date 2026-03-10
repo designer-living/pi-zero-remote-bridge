@@ -1,0 +1,38 @@
+#!/sbin/openrc-run
+
+name="remote-bridge"
+description="Remote Bridge - IR Remote to Network Bridge"
+
+command="/usr/local/bin/remote_bridge"
+command_user="remote-bridge:input"
+pidfile="/run/${RC_SVCNAME}.pid"
+command_background="yes"
+output_log="/var/log/remote-bridge.log"
+error_log="/var/log/remote-bridge.log"
+
+depend() {
+    need net
+    after firewall
+}
+
+checkconfig() {
+    if [ ! -f /etc/remote-bridge.conf ]; then
+        eerror "Configuration file /etc/remote-bridge.conf not found"
+        return 1
+    fi
+    # shellcheck source=/dev/null
+    . /etc/remote-bridge.conf
+    if [ -z "${REMOTE_NAME}" ] || [ -z "${SERVER_IP}" ] || [ -z "${SERVER_PORT}" ]; then
+        eerror "REMOTE_NAME, SERVER_IP, and SERVER_PORT must be set in /etc/remote-bridge.conf"
+        return 1
+    fi
+    return 0
+}
+
+start_pre() {
+    checkconfig || return 1
+    # shellcheck source=/dev/null
+    . /etc/remote-bridge.conf
+    command_args="${REMOTE_NAME} ${SERVER_IP} ${SERVER_PORT}"
+    checkpath --file --mode 0640 --owner remote-bridge:root /var/log/remote-bridge.log
+}
