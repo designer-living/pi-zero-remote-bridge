@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 # pair-remote.sh - Pair a Bluetooth remote and get its evdev name for remote-bridge
 set -e
 
@@ -13,16 +13,16 @@ else
     RED=''; GREEN=''; YELLOW=''; BLUE=''; BOLD=''; NC=''
 fi
 
-info()   { echo -e "${BLUE}→${NC} $*"; }
-ok()     { echo -e "${GREEN}✓${NC} $*"; }
-warn()   { echo -e "${YELLOW}⚠${NC} $*"; }
-err()    { echo -e "${RED}✗${NC} $*" >&2; }
-header() { echo -e "\n${BOLD}$*${NC}"; }
+info()   { printf "${BLUE}→${NC} %s\n" "$*"; }
+ok()     { printf "${GREEN}✓${NC} %s\n" "$*"; }
+warn()   { printf "${YELLOW}⚠${NC} %s\n" "$*"; }
+err()    { printf "${RED}✗${NC} %s\n" "$*" >&2; }
+header() { printf "\n${BOLD}%s${NC}\n" "$*"; }
 die()    { err "$*"; exit 1; }
 
 # --- Dependency check ---
 command -v bluetoothctl >/dev/null 2>&1 \
-    || die "bluetoothctl not found. Install with: sudo apt-get install bluetooth"
+    || die "bluetoothctl not found. Install: apt-get install bluetooth  OR  apk add bluez"
 
 bluetoothctl show >/dev/null 2>&1 \
     || die "Cannot access Bluetooth. Try running with sudo."
@@ -44,42 +44,46 @@ echo ""
 bluetoothctl scan on >/dev/null 2>&1
 sleep "$SCAN_SECONDS"
 bluetoothctl scan off >/dev/null 2>&1 || true
-
-# Give BlueZ a moment to settle
 sleep 1
 
-# Collect discovered devices (MAC + name)
+# Collect discovered devices as "MAC Name" lines
 DEVICES=$(bluetoothctl devices | awk '{mac=$2; $1=$2=""; name=$0; gsub(/^ +/,"",name); print mac " " name}')
 
 if [ -z "$DEVICES" ]; then
     die "No devices found. Make sure your remote is in pairing mode and try again."
 fi
 
+DEVICE_COUNT=$(echo "$DEVICES" | wc -l)
+
 # --- Device selection menu ---
 header "Discovered devices:"
 echo ""
 
 i=1
-declare -a MACS
-declare -a NAMES
 while IFS= read -r line; do
-    MAC=$(echo "$line" | awk '{print $1}')
-    NAME=$(echo "$line" | cut -d' ' -f2-)
-    MACS[$i]="$MAC"
-    NAMES[$i]="$NAME"
-    printf "  ${BOLD}%2d)${NC}  %s  %s\n" "$i" "$MAC" "$NAME"
-    ((i++))
-done <<< "$DEVICES"
+    mac=$(echo "$line" | awk '{print $1}')
+    name=$(echo "$line" | cut -d' ' -f2-)
+    printf "  ${BOLD}%2d)${NC}  %s  %s\n" "$i" "$mac" "$name"
+    i=$((i+1))
+done << EOF
+$DEVICES
+EOF
 
 echo ""
-read -r -p "Select device [1-$((i-1))]: " CHOICE
+printf "Select device [1-%d]: " "$DEVICE_COUNT"
+read -r CHOICE
 
-if ! [[ "$CHOICE" =~ ^[0-9]+$ ]] || [ "$CHOICE" -lt 1 ] || [ "$CHOICE" -ge "$i" ]; then
+# Validate: must be a number within range
+case "$CHOICE" in
+    ''|*[!0-9]*) die "Invalid selection." ;;
+esac
+if [ "$CHOICE" -lt 1 ] || [ "$CHOICE" -gt "$DEVICE_COUNT" ]; then
     die "Invalid selection."
 fi
 
-SELECTED_MAC="${MACS[$CHOICE]}"
-SELECTED_NAME="${NAMES[$CHOICE]}"
+SELECTED_LINE=$(echo "$DEVICES" | sed -n "${CHOICE}p")
+SELECTED_MAC=$(echo "$SELECTED_LINE" | awk '{print $1}')
+SELECTED_NAME=$(echo "$SELECTED_LINE" | cut -d' ' -f2-)
 
 # --- Pair ---
 header "Pairing with ${SELECTED_NAME} (${SELECTED_MAC})..."
@@ -108,11 +112,12 @@ fi
 header "Waiting for input device to appear (up to 15 seconds)..."
 
 EVDEV_NAME=""
-for attempt in $(seq 1 15); do
+attempt=1
+while [ "$attempt" -le 15 ]; do
     sleep 1
     NEW_DEVS=$(ls /sys/class/input/ 2>/dev/null | grep '^event' || true)
     for dev in $NEW_DEVS; do
-        if ! echo "$EXISTING_DEVS" | grep -qx "$dev"; then
+        if ! echo "$EXISTING_DEVS" | grep -q "^${dev}$"; then
             DEV_NAME=$(cat "/sys/class/input/${dev}/device/name" 2>/dev/null || true)
             if [ -n "$DEV_NAME" ]; then
                 EVDEV_NAME="$DEV_NAME"
@@ -121,7 +126,8 @@ for attempt in $(seq 1 15); do
             fi
         fi
     done
-    echo -n "."
+    printf "."
+    attempt=$((attempt+1))
 done
 echo ""
 
@@ -134,31 +140,34 @@ fi
 # --- Show result ---
 header "Add this to ${CONFIG_FILE}:"
 echo ""
-echo -e "  ${BOLD}REMOTE_NAME=\"${EVDEV_NAME}\"${NC}"
+printf "  ${BOLD}REMOTE_NAME=\"%s\"${NC}\n" "$EVDEV_NAME"
 echo ""
 
 # --- Optionally update config ---
 if [ -f "$CONFIG_FILE" ]; then
-    read -r -p "Update ${CONFIG_FILE} with this name now? [y/N]: " UPDATE
-    if [[ "$UPDATE" =~ ^[Yy]$ ]]; then
-        sudo sed -i "s|^REMOTE_NAME=.*|REMOTE_NAME=\"${EVDEV_NAME}\"|" "$CONFIG_FILE"
-        ok "Updated ${CONFIG_FILE}"
+    printf "Update %s with this name now? [y/N]: " "$CONFIG_FILE"
+    read -r UPDATE
+    case "$UPDATE" in
+        [Yy]*)
+            sudo sed -i "s|^REMOTE_NAME=.*|REMOTE_NAME=\"${EVDEV_NAME}\"|" "$CONFIG_FILE"
+            ok "Updated ${CONFIG_FILE}"
 
-        # Offer service restart
-        if command -v systemctl >/dev/null 2>&1 && systemctl is-active remote-bridge >/dev/null 2>&1; then
-            read -r -p "Restart remote-bridge service? [y/N]: " RESTART
-            if [[ "$RESTART" =~ ^[Yy]$ ]]; then
-                sudo systemctl restart remote-bridge
-                ok "Service restarted"
+            # Offer service restart
+            if command -v systemctl >/dev/null 2>&1 && systemctl is-active remote-bridge >/dev/null 2>&1; then
+                printf "Restart remote-bridge service? [y/N]: "
+                read -r RESTART
+                case "$RESTART" in
+                    [Yy]*) sudo systemctl restart remote-bridge && ok "Service restarted" ;;
+                esac
+            elif command -v rc-service >/dev/null 2>&1 && rc-service remote-bridge status >/dev/null 2>&1; then
+                printf "Restart remote-bridge service? [y/N]: "
+                read -r RESTART
+                case "$RESTART" in
+                    [Yy]*) sudo rc-service remote-bridge restart && ok "Service restarted" ;;
+                esac
             fi
-        elif command -v rc-service >/dev/null 2>&1 && rc-service remote-bridge status >/dev/null 2>&1; then
-            read -r -p "Restart remote-bridge service? [y/N]: " RESTART
-            if [[ "$RESTART" =~ ^[Yy]$ ]]; then
-                sudo rc-service remote-bridge restart
-                ok "Service restarted"
-            fi
-        fi
-    fi
+            ;;
+    esac
 fi
 
 echo ""

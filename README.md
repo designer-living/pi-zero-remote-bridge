@@ -66,8 +66,9 @@ The script will:
 4. Detect the evdev name that appears in `/dev/input`
 5. Optionally update `/etc/remote-bridge.conf` and restart the service
 
-Requires the `bluetooth` package (`sudo apt-get install bluetooth` on Debian,
-`sudo apk add bluez` on Alpine).
+Requires BlueZ:
+- Debian / Raspberry Pi OS: `sudo apt-get install bluetooth`
+- Alpine: `sudo apk add bluez bluez-openrc`
 
 ---
 
