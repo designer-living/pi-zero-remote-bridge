@@ -1,0 +1,65 @@
+name: Build and Release Packages
+
+on:
+  release:
+    types: [created]
+
+jobs:
+  build-packages:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - arch: armhf
+            cc: arm-linux-gnueabihf-gcc
+            cc_pkg: gcc-arm-linux-gnueabihf
+            cflags: -march=armv6 -marm -mfpu=vfp -mfloat-abi=hard
+          - arch: arm64
+            cc: aarch64-linux-gnu-gcc
+            cc_pkg: gcc-aarch64-linux-gnu
+            cflags: ""
+          - arch: amd64
+            cc: gcc
+            cc_pkg: ""
+            cflags: ""
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get version
+        id: vars
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+
+      - name: Install cross-compilation tools
+        run: |
+          sudo apt-get update
+          PKGS="nfpm"
+          if [ -n "${{ matrix.cc_pkg }}" ]; then
+            PKGS="$PKGS ${{ matrix.cc_pkg }}"
+          fi
+          echo 'deb [trusted=yes] https://repo.goreleaser.com/apt/ /' | sudo tee /etc/apt/sources.list.d/goreleaser.list
+          sudo apt-get update
+          sudo apt-get install -y $PKGS
+
+      - name: Build binary
+        run: |
+          ${{ matrix.cc }} ${{ matrix.cflags }} -O2 -Wall -Wextra -o remote_bridge remote_bridge.c
+
+      - name: Build Debian package
+        env:
+          VERSION: ${{ steps.vars.outputs.VERSION }}
+          ARCH: ${{ matrix.arch }}
+        run: nfpm package --config packaging/nfpm-deb.yaml --target .
+
+      - name: Build Alpine package
+        env:
+          VERSION: ${{ steps.vars.outputs.VERSION }}
+          ARCH: ${{ matrix.arch }}
+        run: nfpm package --config packaging/nfpm-apk.yaml --target .
+
+      - name: Upload packages to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            *.deb
+            *.apk

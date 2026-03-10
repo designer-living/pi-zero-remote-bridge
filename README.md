@@ -1,6 +1,55 @@
 # Remote Bridge - Setup Guide
 
-## Quick Setup
+## Installing from Packages
+
+Pre-built packages for Debian/Raspberry Pi OS and Alpine Linux are available on the
+[Releases](../../releases) page for `armhf`, `arm64`, and `amd64`.
+
+### Debian / Raspberry Pi OS
+
+```bash
+# Download the package for your architecture (e.g. armhf for Pi Zero v1/v2)
+wget https://github.com/foxy82/pi-zero-remote-bridge/releases/latest/download/remote-bridge_<version>_armhf.deb
+
+# Install
+sudo dpkg -i remote-bridge_<version>_armhf.deb
+```
+
+After install, edit the configuration file and restart:
+```bash
+sudo nano /etc/remote-bridge.conf
+sudo systemctl restart remote-bridge
+```
+
+View logs:
+```bash
+sudo journalctl -u remote-bridge -f
+```
+
+### Alpine Linux
+
+```bash
+# Download the package for your architecture (e.g. armhf for Pi Zero v1/v2)
+wget https://github.com/foxy82/pi-zero-remote-bridge/releases/latest/download/remote-bridge_<version>_armhf.apk
+
+# Install (packages are not signed, so --allow-untrusted is required)
+sudo apk add --allow-untrusted remote-bridge_<version>_armhf.apk
+```
+
+After install, edit the configuration file and restart:
+```bash
+sudo nano /etc/remote-bridge.conf
+sudo rc-service remote-bridge restart
+```
+
+View logs:
+```bash
+tail -f /var/log/remote-bridge.log
+```
+
+---
+
+## Building from Source
 
 ### 1. Build the Application
 ```bash
@@ -35,22 +84,27 @@ make install
 This will:
 - Install the binary to `/usr/local/bin/`
 - Create a dedicated `remote-bridge` system user (no login, member of `input` group)
-- Install and configure the systemd service
+- Install and start the service (systemd on Debian/Raspberry Pi OS, OpenRC on Alpine)
 
-### 5. Start the Service
-```bash
-sudo systemctl enable remote-bridge
-sudo systemctl start remote-bridge
-```
+---
 
 ## Managing the Service
 
 ### Check Status
+
+**Debian / Raspberry Pi OS:**
 ```bash
 sudo systemctl status remote-bridge
 ```
 
+**Alpine:**
+```bash
+sudo rc-service remote-bridge status
+```
+
 ### View Logs
+
+**Debian / Raspberry Pi OS:**
 ```bash
 # View recent logs
 sudo journalctl -u remote-bridge -n 50
@@ -60,26 +114,40 @@ sudo journalctl -u remote-bridge -f
 
 # View logs since last boot
 sudo journalctl -u remote-bridge -b
+```
 
-# View logs for specific time range
-sudo journalctl -u remote-bridge --since "1 hour ago"
-sudo journalctl -u remote-bridge --since "2024-01-01" --until "2024-01-02"
+**Alpine:**
+```bash
+tail -f /var/log/remote-bridge.log
 ```
 
 ### Restart the Service
+
+**Debian / Raspberry Pi OS:**
 ```bash
 sudo systemctl restart remote-bridge
 ```
 
-### Stop the Service
+**Alpine:**
 ```bash
-sudo systemctl stop remote-bridge
+sudo rc-service remote-bridge restart
 ```
 
-### Disable Auto-Start
+### Stop / Disable Auto-Start
+
+**Debian / Raspberry Pi OS:**
 ```bash
+sudo systemctl stop remote-bridge
 sudo systemctl disable remote-bridge
 ```
+
+**Alpine:**
+```bash
+sudo rc-service remote-bridge stop
+sudo rc-update del remote-bridge default
+```
+
+---
 
 ## Troubleshooting
 
@@ -89,15 +157,12 @@ sudo systemctl disable remote-bridge
    cat /etc/remote-bridge.conf
    ```
 
-2. Check for errors in the logs:
-   ```bash
-   sudo journalctl -u remote-bridge -n 50
-   ```
-
-3. Verify the binary exists:
+2. Verify the binary exists:
    ```bash
    ls -l /usr/local/bin/remote_bridge
    ```
+
+3. Check for errors in the logs (see [View Logs](#view-logs) above).
 
 ### Remote not detected
 1. Verify your remote is connected:
@@ -107,10 +172,7 @@ sudo systemctl disable remote-bridge
 
 2. Check that the REMOTE_NAME in `/etc/remote-bridge.conf` matches exactly (case-sensitive)
 
-3. Check the logs to see what's happening:
-   ```bash
-   sudo journalctl -u remote-bridge -f
-   ```
+3. Check the logs to see what's happening.
 
 ### Network issues
 1. Verify server IP and port are correct in `/etc/remote-bridge.conf`
@@ -120,7 +182,23 @@ sudo systemctl disable remote-bridge
    ping <SERVER_IP>
    ```
 
+---
+
 ## Uninstall
+
+**Debian / Raspberry Pi OS:**
+```bash
+sudo dpkg -r remote-bridge
+sudo rm -f /etc/remote-bridge.conf
+```
+
+**Alpine:**
+```bash
+sudo apk del remote-bridge
+sudo rm -f /etc/remote-bridge.conf
+```
+
+**From source:**
 ```bash
 make uninstall
 sudo rm -f /etc/remote-bridge.conf
@@ -128,15 +206,3 @@ sudo rm -f /etc/remote-bridge.conf
 
 ## Configuration File Location
 `/etc/remote-bridge.conf`
-
-## Log Location
-Logs are stored in the systemd journal. Access them using:
-```bash
-journalctl -u remote-bridge
-```
-
-## Service Features
-- **Auto-start on boot**: Enabled with `systemctl enable`
-- **Auto-restart on crash**: Restarts automatically after 5 seconds
-- **Centralized logging**: All logs go to systemd journal
-- **Easy configuration**: Simple config file in `/etc/`

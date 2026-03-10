@@ -1,0 +1,32 @@
+name: remote-bridge
+arch: ${ARCH}
+platform: linux
+version: ${VERSION}
+maintainer: "pi-zero-remote-bridge"
+description: |
+  IR Remote to Network Bridge.
+  Reads key events from an IR remote control and forwards
+  them over UDP to a remote server. Monitors /dev/input for
+  hotplug events and reconnects automatically.
+license: MIT
+
+contents:
+  - src: remote_bridge
+    dst: /usr/local/bin/remote_bridge
+    file_info:
+      mode: 0755
+
+  - src: remote-bridge.initd
+    dst: /etc/init.d/remote-bridge
+    file_info:
+      mode: 0755
+
+  - src: remote-bridge.conf
+    dst: /etc/remote-bridge.conf
+    type: config|noreplace
+    file_info:
+      mode: 0644
+
+scripts:
+  postinstall: packaging/scripts/postinstall-apk.sh
+  preremove: packaging/scripts/preremove-apk.sh
