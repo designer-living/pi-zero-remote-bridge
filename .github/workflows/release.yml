@@ -49,13 +49,13 @@ jobs:
         env:
           VERSION: ${{ steps.vars.outputs.VERSION }}
           ARCH: ${{ matrix.arch }}
-        run: nfpm package --config packaging/nfpm-deb.yaml --target .
+        run: nfpm package --config packaging/nfpm-deb.yaml --packager deb --target .
 
       - name: Build Alpine package
         env:
           VERSION: ${{ steps.vars.outputs.VERSION }}
           ARCH: ${{ matrix.arch }}
-        run: nfpm package --config packaging/nfpm-apk.yaml --target .
+        run: nfpm package --config packaging/nfpm-apk.yaml --packager apk --target .
 
       - name: Upload packages to release
         uses: softprops/action-gh-release@v2
