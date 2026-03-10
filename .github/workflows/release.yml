@@ -13,7 +13,7 @@ jobs:
           - arch: armhf
             cc: arm-linux-gnueabihf-gcc
             cc_pkg: gcc-arm-linux-gnueabihf
-            cflags: -march=armv6 -mfpu=vfp -mfloat-abi=hard
+            cflags: -march=armv6 -marm -mfpu=vfp -mfloat-abi=hard
           - arch: arm64
             cc: aarch64-linux-gnu-gcc
             cc_pkg: gcc-aarch64-linux-gnu
