@@ -9,8 +9,6 @@ description: |
   them over UDP to a remote server. Monitors /dev/input for
   hotplug events and reconnects automatically.
 license: MIT
-depends:
-  - libc6
 
 contents:
   - src: remote_bridge

@@ -10,14 +10,14 @@ jobs:
       matrix:
         include:
           - arch: armhf
-            cc: arm-linux-gnueabihf-gcc
-            cc_pkg: gcc-arm-linux-gnueabihf
-            cflags: -march=armv6 -marm -mfpu=vfp -mfloat-abi=hard
+            use_qemu: true
           - arch: arm64
+            use_qemu: false
             cc: aarch64-linux-gnu-gcc
             cc_pkg: gcc-aarch64-linux-gnu
             cflags: ""
           - arch: amd64
+            use_qemu: false
             cc: gcc
             cc_pkg: ""
             cflags: ""
@@ -26,11 +26,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Set up QEMU
+        if: ${{ matrix.use_qemu }}
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm
+
+      - name: Build (armhf via QEMU)
+        if: ${{ matrix.use_qemu }}
+        run: |
+          docker run --rm --platform linux/arm/v6 \
+            -v "$PWD:/work" -w /work \
+            alpine:latest \
+            sh -c "apk add --no-cache gcc musl-dev && gcc -O2 -Wall -Wextra -o remote_bridge remote_bridge.c"
+
       - name: Install cross-compilation tools
-        if: matrix.cc_pkg != ''
+        if: ${{ !matrix.use_qemu && matrix.cc_pkg != '' }}
         run: |
           sudo apt-get update
           sudo apt-get install -y ${{ matrix.cc_pkg }}
 
       - name: Build
+        if: ${{ !matrix.use_qemu }}
         run: ${{ matrix.cc }} ${{ matrix.cflags }} -O2 -Wall -Wextra -o remote_bridge remote_bridge.c
