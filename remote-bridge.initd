@@ -33,6 +33,6 @@ start_pre() {
     checkconfig || return 1
     # shellcheck source=/dev/null
     . /etc/remote-bridge.conf
-    command_args="${REMOTE_NAME} ${SERVER_IP} ${SERVER_PORT}"
+    command_args="\"${REMOTE_NAME}\" \"${SERVER_IP}\" \"${SERVER_PORT}\""
     checkpath --file --mode 0640 --owner remote-bridge:root /var/log/remote-bridge.log
 }
