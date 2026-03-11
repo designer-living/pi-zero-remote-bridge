@@ -35,23 +35,39 @@ static uint64_t now_ms(void) {
 
 static int debug = 0;
 
-#define DEBUG_PRINT(fmt, ...) \
-    do { if (debug) { printf("[DEBUG] " fmt, ##__VA_ARGS__); fflush(stdout); } } while (0)
+/* -------- Logging helper with UTC timestamp -------- */
+static void log_print(const char *level, const char *fmt, ...) {
+    time_t now = time(NULL);
+    struct tm tm_utc;
+    gmtime_r(&now, &tm_utc);
+    char tstr[32];
+    strftime(tstr, sizeof(tstr), "%Y-%m-%dT%H:%M:%SZ", &tm_utc);
+
+    printf("[%s] [%s] ", tstr, level);
+    va_list args;
+    va_start(args, fmt);
+    vprintf(fmt, args);
+    va_end(args);
+    fflush(stdout);
+}
+
+#define LOG_INFO(fmt, ...)  log_print("INFO",  fmt, ##__VA_ARGS__)
+#define LOG_DEBUG(fmt, ...) do { if (debug) log_print("DEBUG", fmt, ##__VA_ARGS__); } while (0)
+#define LOG_ERROR(fmt, ...) log_print("ERROR", fmt, ##__VA_ARGS__)
 
 /* -------- Match exact evdev name -------- */
 static int matches_device(int fd, const char *target, const char *path) {
     char name[MAX_NAME] = {0};
 
     if (ioctl(fd, EVIOCGNAME(sizeof(name)), name) < 0) {
-        DEBUG_PRINT("Failed to get name for %s: %s\n", path, strerror(errno));
+        LOG_DEBUG("Failed to get name for %s: %s\n", path, strerror(errno));
         return 0;
     }
 
-    DEBUG_PRINT("Checking device %s: name=\"%s\"\n", path, name);
+    LOG_DEBUG("Checking device %s: name=\"%s\"\n", path, name);
 
     if (strcmp(name, target) == 0) {
-        printf("Matched device: %s at %s\n", name, path);
-        fflush(stdout);
+        LOG_INFO("Matched device: %s at %s\n", name, path);
         return 1;
     }
 
@@ -62,9 +78,9 @@ static int try_open_device(const char *path, const char *target) {
     int fd = open(path, O_RDONLY | O_NONBLOCK);
     if (fd < 0) {
         if (errno != EACCES) {
-            DEBUG_PRINT("Failed to open %s: %s\n", path, strerror(errno));
+            LOG_DEBUG("Failed to open %s: %s\n", path, strerror(errno));
         } else {
-            DEBUG_PRINT("Permission denied for %s (try sudo?)\n", path);
+            LOG_DEBUG("Permission denied for %s (try sudo?)\n", path);
         }
         return -1;
     }
@@ -96,12 +112,11 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    if (debug) printf("Debug logging enabled\n");
-    DEBUG_PRINT("Remote Name: \"%s\"\n", remote_name);
-    DEBUG_PRINT("Server IP:   \"%s\"\n", server_ip);
-    DEBUG_PRINT("Server Port: %d\n", server_port);
-    printf("Connecting to %s:%d\n", server_ip, server_port);
-    fflush(stdout);
+    if (debug) LOG_INFO("Debug logging enabled\n");
+    LOG_DEBUG("Remote Name: \"%s\"\n", remote_name);
+    LOG_DEBUG("Server IP:   \"%s\"\n", server_ip);
+    LOG_DEBUG("Server Port: %d\n", server_port);
+    LOG_INFO("Connecting to %s:%d\n", server_ip, server_port);
 
     /* UDP socket */
     int sock = socket(AF_INET, SOCK_DGRAM, 0);
@@ -114,7 +129,7 @@ int main(int argc, char *argv[]) {
     server.sin_family = AF_INET;
     server.sin_port   = htons(server_port);
     if (!inet_aton(server_ip, &server.sin_addr)) {
-        fprintf(stderr, "Invalid IP address: %s\n", server_ip);
+        LOG_ERROR("Invalid IP address: %s\n", server_ip);
         return 1;
     }
 
@@ -132,8 +147,7 @@ int main(int argc, char *argv[]) {
 
     int evfd = -1;
 
-    printf("Waiting for remote matching \"%s\"...\n", remote_name);
-    fflush(stdout);
+    LOG_INFO("Waiting for remote matching \"%s\"...\n", remote_name);
 
     /* Initial scan (remote may already be connected) */
     DIR *d = opendir(INPUT_DIR);
@@ -156,7 +170,7 @@ int main(int argc, char *argv[]) {
     closedir(d);
 
     if (evfd < 0) {
-        DEBUG_PRINT("Remote not found during initial scan of " INPUT_DIR "\n");
+        LOG_DEBUG("Remote not found during initial scan of " INPUT_DIR "\n");
     }
 
     struct pollfd fds[2];
@@ -196,8 +210,7 @@ int main(int argc, char *argv[]) {
                     if (errno == EAGAIN || errno == EINTR)
                         break;
                     if (errno == ENODEV) {
-                        printf("Remote disconnected\n");
-                        fflush(stdout);
+                        LOG_INFO("Remote disconnected\n");
                         close(evfd);
                         evfd = -1;
                         break;
@@ -207,11 +220,11 @@ int main(int argc, char *argv[]) {
                 }
 
                 if (n != sizeof(ev)) {
-                    DEBUG_PRINT("Short read from evdev: expected %zu, got %zd\n", sizeof(ev), n);
+                    LOG_DEBUG("Short read from evdev: expected %zu, got %zd\n", sizeof(ev), n);
                     break;
                 }
 
-                DEBUG_PRINT("Event: type=%d, code=%d, value=%d\n", ev.type, ev.code, ev.value);
+                LOG_DEBUG("Event: type=%d, code=%d, value=%d\n", ev.type, ev.code, ev.value);
 
                 if (ev.type == EV_KEY) {
                     pkt.timestamp_ms =
@@ -227,9 +240,9 @@ int main(int argc, char *argv[]) {
                                           (struct sockaddr *)&server,
                                           sizeof(server));
                     if (sent < 0) {
-                        DEBUG_PRINT("Failed to send UDP packet: %s\n", strerror(errno));
+                        LOG_DEBUG("Failed to send UDP packet: %s\n", strerror(errno));
                     } else {
-                        DEBUG_PRINT("Sent UDP packet for key %d, value %d\n", ev.code, ev.value);
+                        LOG_DEBUG("Sent UDP packet for key %d, value %d\n", ev.code, ev.value);
                     }
                 }
             }
@@ -255,11 +268,10 @@ int main(int argc, char *argv[]) {
                         snprintf(path, sizeof(path),
                                  INPUT_DIR "/%s", ie->name);
 
-                        DEBUG_PRINT("Hotplug detected: %s\n", path);
+                        LOG_DEBUG("Hotplug detected: %s\n", path);
                         evfd = try_open_device(path, remote_name);
                         if (evfd >= 0) {
-                            printf("Remote connected\n");
-                            fflush(stdout);
+                            LOG_INFO("Remote connected\n");
                         }
                     }
 
