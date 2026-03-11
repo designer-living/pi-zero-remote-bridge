@@ -63,7 +63,13 @@ sudo evtest
 ```
 Look for your IR receiver in the list and copy the exact name.
 
-### 3. Configure
+### 3. Test Manually (Optional)
+You can run the binary directly to test it with verbose logging:
+```bash
+./remote_bridge "Your Remote Name" 192.168.1.100 9999 --debug
+```
+
+### 4. Configure
 Edit the configuration file and set your remote name, server IP, and port:
 ```bash
 nano remote-bridge.conf
@@ -151,36 +157,21 @@ sudo rc-update del remote-bridge default
 
 ## Troubleshooting
 
-### Service won't start
-1. Check the configuration file:
-   ```bash
-   cat /etc/remote-bridge.conf
-   ```
+### Debug Mode
+Run the binary manually with `--debug` to see detailed logs about device discovery and event processing:
+```bash
+sudo /usr/local/bin/remote_bridge "Remote Name" <SERVER_IP> <SERVER_PORT> --debug
+```
 
-2. Verify the binary exists:
-   ```bash
-   ls -l /usr/local/bin/remote_bridge
-   ```
+### Common Issues on Alpine Linux
 
-3. Check for errors in the logs (see [View Logs](#view-logs) above).
-
-### Remote not detected
-1. Verify your remote is connected:
-   ```bash
-   sudo evtest
-   ```
-
-2. Check that the REMOTE_NAME in `/etc/remote-bridge.conf` matches exactly (case-sensitive)
-
-3. Check the logs to see what's happening.
-
-### Network issues
-1. Verify server IP and port are correct in `/etc/remote-bridge.conf`
-
-2. Test network connectivity:
-   ```bash
-   ping <SERVER_IP>
-   ```
+1.  **Architecture Mismatch**: Pi Zero v1.x uses ARMv6. If you use a standard `armhf` package from a newer distro (like Ubuntu), it might target ARMv7 and fail. The release assets in this repo include a specific `armhf` binary built for ARMv6 via QEMU.
+2.  **Permissions**: Ensure the user running the bridge has read access to `/dev/input/event*`. The service uses the `input` group. On Alpine, verify the `input` group exists and has permissions:
+    ```bash
+    ls -l /dev/input
+    ```
+3.  **Device Name**: The `REMOTE_NAME` must match the output of `evtest` *exactly*.
+4.  **UDP Connectivity**: Use `nc -u -l -p <PORT>` on your server to verify packets are arriving.
 
 ---
 
