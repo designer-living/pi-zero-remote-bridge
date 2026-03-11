@@ -10,10 +10,15 @@ if ! id -u remote-bridge > /dev/null 2>&1; then
 fi
 usermod -aG input remote-bridge
 
-# Reload systemd and enable/start the service
+# Reload udev rules to pick up the new rule if udev is present
+if command -v udevadm > /dev/null 2>&1; then
+    udevadm control --reload-rules && udevadm trigger --subsystem-match=input || true
+fi
+
+# Reload systemd and enable/restart the service (restart handles upgrades better than start)
 systemctl daemon-reload
 systemctl enable remote-bridge
-systemctl start remote-bridge || true
+systemctl restart remote-bridge || true
 
 echo ""
 echo "remote-bridge installed and started."

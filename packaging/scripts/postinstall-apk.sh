@@ -9,9 +9,14 @@ if ! id -u remote-bridge > /dev/null 2>&1; then
     adduser -S -D -H -G input -s /sbin/nologin remote-bridge
 fi
 
-# Enable and start service
+# Reload udev rules to pick up the new rule if udev is present
+if command -v udevadm > /dev/null 2>&1; then
+    udevadm control --reload-rules && udevadm trigger --subsystem-match=input || true
+fi
+
+# Enable and restart service (restart handles upgrades better than start)
 rc-update add remote-bridge default
-rc-service remote-bridge start || true
+rc-service remote-bridge restart || true
 
 echo ""
 echo "remote-bridge installed and started."
