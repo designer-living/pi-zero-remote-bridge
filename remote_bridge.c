@@ -33,15 +33,24 @@ static uint64_t now_ms(void) {
            ts.tv_nsec / 1000000ULL;
 }
 
+static int debug = 0;
+
+#define DEBUG_PRINT(fmt, ...) \
+    do { if (debug) { printf("[DEBUG] " fmt, ##__VA_ARGS__); fflush(stdout); } } while (0)
+
 /* -------- Match exact evdev name -------- */
-static int matches_device(int fd, const char *target) {
+static int matches_device(int fd, const char *target, const char *path) {
     char name[MAX_NAME] = {0};
 
-    if (ioctl(fd, EVIOCGNAME(sizeof(name)), name) < 0)
+    if (ioctl(fd, EVIOCGNAME(sizeof(name)), name) < 0) {
+        DEBUG_PRINT("Failed to get name for %s: %s\n", path, strerror(errno));
         return 0;
+    }
+
+    DEBUG_PRINT("Checking device %s: name=\"%s\"\n", path, name);
 
     if (strcmp(name, target) == 0) {
-        printf("Matched device: %s\n", name);
+        printf("Matched device: %s at %s\n", name, path);
         fflush(stdout);
         return 1;
     }
@@ -51,10 +60,16 @@ static int matches_device(int fd, const char *target) {
 
 static int try_open_device(const char *path, const char *target) {
     int fd = open(path, O_RDONLY | O_NONBLOCK);
-    if (fd < 0)
+    if (fd < 0) {
+        if (errno != EACCES) {
+            DEBUG_PRINT("Failed to open %s: %s\n", path, strerror(errno));
+        } else {
+            DEBUG_PRINT("Permission denied for %s (try sudo?)\n", path);
+        }
         return -1;
+    }
 
-    if (matches_device(fd, target))
+    if (matches_device(fd, target, path))
         return fd;
 
     close(fd);
@@ -63,9 +78,9 @@ static int try_open_device(const char *path, const char *target) {
 
 /* -------- Main -------- */
 int main(int argc, char *argv[]) {
-    if (argc != 4) {
+    if (argc < 4) {
         fprintf(stderr,
-            "Usage: %s <exact_remote_name> <server_ip> <server_port>\n",
+            "Usage: %s <exact_remote_name> <server_ip> <server_port> [--debug]\n",
             argv[0]);
         return 1;
     }
@@ -74,6 +89,14 @@ int main(int argc, char *argv[]) {
     const char *server_ip   = argv[2];
     int server_port         = atoi(argv[3]);
 
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--debug") == 0) {
+            debug = 1;
+            break;
+        }
+    }
+
+    if (debug) printf("Debug logging enabled\n");
     printf("Connecting to %s:%d\n", server_ip, server_port);
     fflush(stdout);
 
@@ -88,7 +111,7 @@ int main(int argc, char *argv[]) {
     server.sin_family = AF_INET;
     server.sin_port   = htons(server_port);
     if (!inet_aton(server_ip, &server.sin_addr)) {
-        fprintf(stderr, "Invalid IP address\n");
+        fprintf(stderr, "Invalid IP address: %s\n", server_ip);
         return 1;
     }
 
@@ -99,7 +122,10 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    inotify_add_watch(ifd, INPUT_DIR, IN_CREATE | IN_DELETE);
+    if (inotify_add_watch(ifd, INPUT_DIR, IN_CREATE | IN_DELETE) < 0) {
+        perror("inotify_add_watch");
+        // Non-fatal, but we won't see hotplug events
+    }
 
     int evfd = -1;
 
@@ -108,6 +134,11 @@ int main(int argc, char *argv[]) {
 
     /* Initial scan (remote may already be connected) */
     DIR *d = opendir(INPUT_DIR);
+    if (!d) {
+        perror("opendir " INPUT_DIR);
+        return 1;
+    }
+
     struct dirent *ent;
     while ((ent = readdir(d))) {
         if (strncmp(ent->d_name, "event", 5) == 0) {
@@ -120,6 +151,10 @@ int main(int argc, char *argv[]) {
         }
     }
     closedir(d);
+
+    if (evfd < 0) {
+        DEBUG_PRINT("Remote not found during initial scan of " INPUT_DIR "\n");
+    }
 
     struct pollfd fds[2];
     struct input_event ev;
@@ -168,8 +203,12 @@ int main(int argc, char *argv[]) {
                     break;
                 }
 
-                if (n != sizeof(ev))
+                if (n != sizeof(ev)) {
+                    DEBUG_PRINT("Short read from evdev: expected %zu, got %zd\n", sizeof(ev), n);
                     break;
+                }
+
+                DEBUG_PRINT("Event: type=%d, code=%d, value=%d\n", ev.type, ev.code, ev.value);
 
                 if (ev.type == EV_KEY) {
                     pkt.timestamp_ms =
@@ -178,12 +217,17 @@ int main(int argc, char *argv[]) {
                     pkt.value    = (int8_t)ev.value;
                     pkt.reserved = 0;
 
-                    sendto(sock,
-                           &pkt,
-                           sizeof(pkt),
-                           0,
-                           (struct sockaddr *)&server,
-                           sizeof(server));
+                    ssize_t sent = sendto(sock,
+                                          &pkt,
+                                          sizeof(pkt),
+                                          0,
+                                          (struct sockaddr *)&server,
+                                          sizeof(server));
+                    if (sent < 0) {
+                        DEBUG_PRINT("Failed to send UDP packet: %s\n", strerror(errno));
+                    } else {
+                        DEBUG_PRINT("Sent UDP packet for key %d, value %d\n", ev.code, ev.value);
+                    }
                 }
             }
         }
@@ -192,27 +236,32 @@ int main(int argc, char *argv[]) {
         if (fds[idx].revents & POLLIN) {
             char buf[4096];
             ssize_t len = read(ifd, buf, sizeof(buf));
-            for (char *p = buf; p < buf + len; ) {
-                struct inotify_event *ie =
-                    (struct inotify_event *)p;
+            if (len < 0) {
+                if (errno != EAGAIN) perror("read inotify");
+            } else {
+                for (char *p = buf; p < buf + len; ) {
+                    struct inotify_event *ie =
+                        (struct inotify_event *)p;
 
-                if (ie->len &&
-                    strncmp(ie->name, "event", 5) == 0 &&
-                    (ie->mask & IN_CREATE) &&
-                    evfd < 0) {
+                    if (ie->len &&
+                        strncmp(ie->name, "event", 5) == 0 &&
+                        (ie->mask & IN_CREATE) &&
+                        evfd < 0) {
 
-                    char path[256];
-                    snprintf(path, sizeof(path),
-                             INPUT_DIR "/%s", ie->name);
+                        char path[256];
+                        snprintf(path, sizeof(path),
+                                 INPUT_DIR "/%s", ie->name);
 
-                    evfd = try_open_device(path, remote_name);
-                    if (evfd >= 0) {
-                        printf("Remote connected\n");
-                        fflush(stdout);
+                        DEBUG_PRINT("Hotplug detected: %s\n", path);
+                        evfd = try_open_device(path, remote_name);
+                        if (evfd >= 0) {
+                            printf("Remote connected\n");
+                            fflush(stdout);
+                        }
                     }
-                }
 
-                p += sizeof(*ie) + ie->len;
+                    p += sizeof(*ie) + ie->len;
+                }
             }
         }
     }
