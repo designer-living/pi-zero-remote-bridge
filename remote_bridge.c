@@ -97,6 +97,9 @@ int main(int argc, char *argv[]) {
     }
 
     if (debug) printf("Debug logging enabled\n");
+    DEBUG_PRINT("Remote Name: \"%s\"\n", remote_name);
+    DEBUG_PRINT("Server IP:   \"%s\"\n", server_ip);
+    DEBUG_PRINT("Server Port: %d\n", server_port);
     printf("Connecting to %s:%d\n", server_ip, server_port);
     fflush(stdout);
 
