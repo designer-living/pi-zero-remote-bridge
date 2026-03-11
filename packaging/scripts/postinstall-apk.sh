@@ -11,7 +11,7 @@ fi
 
 # Reload udev rules to pick up the new rule if udev is present
 if command -v udevadm > /dev/null 2>&1; then
-    udevadm control --reload-rules && udevadm trigger --subsystem-match=input || true
+    (udevadm control --reload-rules && udevadm trigger --subsystem-match=input) || echo "Warning: Failed to reload udev rules. A reboot may be required for device permissions to apply."
 fi
 
 # Enable and restart service (restart handles upgrades better than start)
