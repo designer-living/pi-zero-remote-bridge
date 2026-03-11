@@ -11,8 +11,9 @@
 #include <sys/inotify.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
-#include <sys/poll.h>
+#include <poll.h>
 #include <time.h>
+#include <stdarg.h>
 
 #define INPUT_DIR "/dev/input"
 #define MAX_NAME 256
