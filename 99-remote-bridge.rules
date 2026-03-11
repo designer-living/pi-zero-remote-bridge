@@ -1,0 +1,2 @@
+# Allow the input group to read input devices
+SUBSYSTEM=="input", GROUP="input", MODE="0660"
