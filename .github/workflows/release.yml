@@ -15,18 +15,12 @@ jobs:
     strategy:
       matrix:
         include:
-          - arch: armhf
-            use_qemu: true
-          - arch: arm64
-            use_qemu: false
-            cc: aarch64-linux-gnu-gcc
-            cc_pkg: gcc-aarch64-linux-gnu libc6-dev-arm64-cross
-            cflags: ""
           - arch: amd64
-            use_qemu: false
-            cc: gcc
-            cc_pkg: ""
-            cflags: ""
+            platform: linux/amd64
+          - arch: arm64
+            platform: linux/arm64
+          - arch: armhf
+            platform: linux/arm/v6
 
     steps:
       - uses: actions/checkout@v4
@@ -41,34 +35,16 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y nfpm
 
-      # armhf: build inside a QEMU-emulated arm/v6 Alpine container so the binary
-      # is compiled with the correct ARMv6 toolchain (Ubuntu's cross-compiler targets
-      # ARMv7 and produces binaries that segfault on Pi Zero v1).
       - name: Set up QEMU
-        if: ${{ matrix.use_qemu }}
         uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm
-
-      - name: Build static binary (armhf via QEMU)
-        if: ${{ matrix.use_qemu }}
-        run: |
-          docker run --rm --platform linux/arm/v6 \
-            -v "$PWD:/work" -w /work \
-            alpine:latest \
-            sh -c "apk add --no-cache gcc musl-dev linux-headers && gcc -static -O2 -Wall -Wextra -o remote_bridge remote_bridge.c"
-
-      # arm64 / amd64: standard cross-compilation. Build statically so the same
-      # binary works for both the .deb and .apk packages.
-      - name: Install cross-compilation tools
-        if: ${{ !matrix.use_qemu }}
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ${{ matrix.cc_pkg }}
 
       - name: Build static binary
-        if: ${{ !matrix.use_qemu }}
-        run: ${{ matrix.cc }} ${{ matrix.cflags }} -static -O2 -Wall -Wextra -o remote_bridge remote_bridge.c
+        run: |
+          docker run --rm --platform ${{ matrix.platform }} \
+            -v "$PWD:/work" -w /work \
+            alpine:latest \
+            sh -c "apk add --no-cache gcc musl-dev linux-headers && \
+                   gcc -static -O2 -Wall -Wextra -o remote_bridge remote_bridge.c"
 
       - name: Build Debian package
         env:
