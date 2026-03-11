@@ -79,9 +79,13 @@ jobs:
           ARCH: ${{ matrix.arch }}
         run: nfpm package --config packaging/nfpm-apk.yaml --packager apk --target .
 
+      - name: Prepare binary for release
+        run: mv remote_bridge remote_bridge-${{ matrix.arch }}
+
       - name: Upload packages to release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             *.deb
             *.apk
+            remote_bridge-${{ matrix.arch }}
