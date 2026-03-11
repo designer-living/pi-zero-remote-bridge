@@ -18,6 +18,8 @@ clean:
 install: $(TARGET)
 	@echo "Installing remote_bridge..."
 	sudo install -m 755 $(TARGET) /usr/local/bin/
+	@echo "Installing udev rule..."
+	sudo install -m 644 99-remote-bridge.rules /etc/udev/rules.d/
 	@echo "Creating dedicated user..."
 	@if command -v useradd >/dev/null 2>&1; then \
 		id -u remote-bridge >/dev/null 2>&1 || sudo useradd -r -s /usr/sbin/nologin -d /nonexistent -M remote-bridge; \
@@ -74,6 +76,7 @@ uninstall:
 		sudo rc-update del remote-bridge default || true; \
 		sudo rm -f /etc/init.d/remote-bridge; \
 	fi
+	sudo rm -f /etc/udev/rules.d/99-remote-bridge.rules
 	sudo rm -f /usr/local/bin/$(TARGET)
 	@echo "Removing dedicated user..."
 	@if command -v userdel >/dev/null 2>&1; then \
