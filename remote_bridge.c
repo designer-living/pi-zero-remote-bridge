@@ -64,11 +64,13 @@ static const char* level_to_str(int level) {
 static void log_print(int level, const char *level_name, const char *fmt, ...) {
     if (level != LEVEL_ALWAYS && level > log_level) return;
 
-    time_t now = time(NULL);
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
     struct tm tm_utc;
-    gmtime_r(&now, &tm_utc);
-    char tstr[32];
-    strftime(tstr, sizeof(tstr), "%Y-%m-%dT%H:%M:%SZ", &tm_utc);
+    gmtime_r(&ts.tv_sec, &tm_utc);
+    char tstr[64];
+    int len = strftime(tstr, sizeof(tstr), "%Y-%m-%dT%H:%M:%S", &tm_utc);
+    snprintf(tstr + len, sizeof(tstr) - len, ".%03ldZ", ts.tv_nsec / 1000000L);
 
     if (level == LEVEL_ALWAYS) {
         printf("[%s] ", tstr);
