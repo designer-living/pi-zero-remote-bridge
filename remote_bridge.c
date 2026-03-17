@@ -218,14 +218,18 @@ int main(int argc, char *argv[]) {
 
     while (1) {
         int nfds = 0;
+        int evfd_idx = -1;
+        int ifd_idx  = -1;
 
         if (evfd >= 0) {
+            evfd_idx = nfds;
             fds[nfds++] = (struct pollfd){
                 .fd = evfd,
                 .events = POLLIN
             };
         }
 
+        ifd_idx = nfds;
         fds[nfds++] = (struct pollfd){
             .fd = ifd,
             .events = POLLIN
@@ -239,80 +243,92 @@ int main(int argc, char *argv[]) {
             break;
         }
 
-        int idx = 0;
-
         /* ---- evdev events ---- */
-        if (evfd >= 0 && fds[idx++].revents & POLLIN) {
-            while (1) {
-                ssize_t n = read(evfd, &ev, sizeof(ev));
-                if (n < 0) {
-                    if (errno == EAGAIN || errno == EINTR)
-                        break;
-                    if (errno == ENODEV) {
-                        LOG_INFO("Remote disconnected\n");
-                        LOG_DEBUG("Device node was at fd %d\n", evfd);
-                        close(evfd);
-                        evfd = -1;
+        if (evfd_idx >= 0) {
+            short revents = fds[evfd_idx].revents;
+
+            /* Disconnect: kernel raises POLLHUP/POLLERR on BT HID removal */
+            if (revents & (POLLHUP | POLLERR)) {
+                LOG_INFO("Remote disconnected (POLLHUP/POLLERR on evdev fd)\n");
+                LOG_DEBUG("Closing stale evdev fd %d\n", evfd);
+                close(evfd);
+                evfd = -1;
+            } else if (revents & POLLIN) {
+                while (1) {
+                    ssize_t n = read(evfd, &ev, sizeof(ev));
+                    if (n < 0) {
+                        if (errno == EAGAIN || errno == EINTR) break;
+                        if (errno == ENODEV) {
+                            LOG_INFO("Remote disconnected (ENODEV on read)\n");
+                            LOG_DEBUG("Closing evdev fd %d\n", evfd);
+                            close(evfd);
+                            evfd = -1;
+                            break;
+                        }
+                        perror("read evdev");
                         break;
                     }
-                    perror("read evdev");
-                    break;
-                }
 
-                if (n != sizeof(ev)) {
-                    LOG_DEBUG("Short read from evdev: expected %zu, got %zd\n", sizeof(ev), n);
-                    break;
-                }
+                    if (n != sizeof(ev)) {
+                        LOG_DEBUG("Short read from evdev: expected %zu, got %zd\n", sizeof(ev), n);
+                        break;
+                    }
 
-                if (ev.type == EV_KEY) {
-                    LOG_TRACE("Key Event: code=%d, value=%d\n", ev.code, ev.value);
-                    pkt.timestamp_ms =
-                        htonl((uint32_t)(now_ms() & 0xFFFFFFFF));
-                    pkt.key_code = htons((uint16_t)ev.code);
-                    pkt.value    = (int8_t)ev.value;
-                    pkt.reserved = 0;
+                    if (ev.type == EV_KEY) {
+                        LOG_TRACE("Key Event: code=%d, value=%d\n", ev.code, ev.value);
+                        pkt.timestamp_ms =
+                            htonl((uint32_t)(now_ms() & 0xFFFFFFFF));
+                        pkt.key_code = htons((uint16_t)ev.code);
+                        pkt.value    = (int8_t)ev.value;
+                        pkt.reserved = 0;
 
-                    ssize_t sent = sendto(sock,
-                                          &pkt,
-                                          sizeof(pkt),
-                                          0,
-                                          (struct sockaddr *)&server,
-                                          sizeof(server));
-                    if (sent < 0) {
-                        LOG_ERROR("Failed to send UDP packet: %s\n", strerror(errno));
-                    } else {
-                        LOG_TRACE("Sent UDP packet for key %d, value %d\n", ev.code, ev.value);
+                        ssize_t sent = sendto(sock,
+                                              &pkt, sizeof(pkt), 0,
+                                              (struct sockaddr *)&server,
+                                              sizeof(server));
+                        if (sent < 0) {
+                            LOG_ERROR("Failed to send UDP packet: %s\n", strerror(errno));
+                        } else {
+                            LOG_TRACE("Sent UDP packet for key %d, value %d\n", ev.code, ev.value);
+                        }
                     }
                 }
             }
         }
 
         /* ---- inotify events ---- */
-        if (fds[idx].revents & POLLIN) {
+        if (fds[ifd_idx].revents & POLLIN) {
             char buf[4096];
             ssize_t len = read(ifd, buf, sizeof(buf));
             if (len < 0) {
                 if (errno != EAGAIN) perror("read inotify");
             } else {
                 for (char *p = buf; p < buf + len; ) {
-                    struct inotify_event *ie =
-                        (struct inotify_event *)p;
+                    struct inotify_event *ie = (struct inotify_event *)p;
 
-                    if (ie->len &&
-                        strncmp(ie->name, "event", 5) == 0 &&
-                        (ie->mask & (IN_CREATE | IN_ATTRIB | IN_MOVED_TO)) &&
-                        evfd < 0) {
+                    if (ie->len && strncmp(ie->name, "event", 5) == 0) {
 
-                        char path[256];
-                        snprintf(path, sizeof(path),
-                                 INPUT_DIR "/%s", ie->name);
+                        if ((ie->mask & IN_DELETE) && evfd >= 0) {
+                            /* Belt-and-suspenders: catch delete if POLLHUP missed it */
+                            LOG_DEBUG("inotify IN_DELETE for %s, closing evdev fd\n",
+                                      ie->name);
+                            close(evfd);
+                            evfd = -1;
+                        }
 
-                        LOG_DEBUG("Hotplug event detected (mask=0x%x): %s\n", ie->mask, path);
+                        if ((ie->mask & (IN_CREATE | IN_ATTRIB | IN_MOVED_TO)) &&
+                            evfd < 0) {
+                            char path[256];
+                            snprintf(path, sizeof(path),
+                                     INPUT_DIR "/%s", ie->name);
 
-                        evfd = try_open_device(path, remote_name);
-                        if (evfd >= 0) {
-                            LOG_INFO("Remote connected\n");
-                            LOG_DEBUG("Device node opened at %s\n", path);
+                            LOG_DEBUG("Hotplug event (mask=0x%x): %s\n", ie->mask, path);
+
+                            evfd = try_open_device(path, remote_name);
+                            if (evfd >= 0) {
+                                LOG_INFO("Remote reconnected\n");
+                                LOG_DEBUG("Device node opened at %s\n", path);
+                            }
                         }
                     }
 
