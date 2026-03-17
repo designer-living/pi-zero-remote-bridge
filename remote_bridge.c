@@ -272,9 +272,6 @@ int main(int argc, char *argv[]) {
 
                         LOG_DEBUG("Hotplug event detected (mask=0x%x): %s\n", ie->mask, path);
 
-                        /* Tiny sleep to let udev/mdev work on permissions if it just created */
-                        if (ie->mask & IN_CREATE) usleep(10000);
-
                         evfd = try_open_device(path, remote_name);
                         if (evfd >= 0) {
                             LOG_INFO("Remote connected\n");
