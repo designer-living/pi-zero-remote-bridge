@@ -39,17 +39,31 @@ static uint64_t now_ms(void) {
            ts.tv_nsec / 1000000ULL;
 }
 
-static int debug = 0;
+enum {
+    LEVEL_ALWAYS = -1,
+    LEVEL_ERROR = 0,
+    LEVEL_INFO,
+    LEVEL_DEBUG,
+    LEVEL_TRACE
+};
+
+static int log_level = LEVEL_INFO;
 
 /* -------- Logging helper with UTC timestamp -------- */
-static void log_print(const char *level, const char *fmt, ...) {
+static void log_print(int level, const char *level_name, const char *fmt, ...) {
+    if (level != LEVEL_ALWAYS && level > log_level) return;
+
     time_t now = time(NULL);
     struct tm tm_utc;
     gmtime_r(&now, &tm_utc);
     char tstr[32];
     strftime(tstr, sizeof(tstr), "%Y-%m-%dT%H:%M:%SZ", &tm_utc);
 
-    printf("[%s] [%s] ", tstr, level);
+    if (level == LEVEL_ALWAYS) {
+        printf("[%s] ", tstr);
+    } else {
+        printf("[%s] [%s] ", tstr, level_name);
+    }
     va_list args;
     va_start(args, fmt);
     vprintf(fmt, args);
@@ -57,9 +71,11 @@ static void log_print(const char *level, const char *fmt, ...) {
     fflush(stdout);
 }
 
-#define LOG_INFO(fmt, ...)  log_print("INFO",  fmt, ##__VA_ARGS__)
-#define LOG_DEBUG(fmt, ...) do { if (debug) log_print("DEBUG", fmt, ##__VA_ARGS__); } while (0)
-#define LOG_ERROR(fmt, ...) log_print("ERROR", fmt, ##__VA_ARGS__)
+#define LOG_ALWAYS(fmt, ...) log_print(LEVEL_ALWAYS, "ALWAYS", fmt, ##__VA_ARGS__)
+#define LOG_ERROR(fmt, ...) log_print(LEVEL_ERROR, "ERROR", fmt, ##__VA_ARGS__)
+#define LOG_INFO(fmt, ...)  log_print(LEVEL_INFO,  "INFO",  fmt, ##__VA_ARGS__)
+#define LOG_DEBUG(fmt, ...) log_print(LEVEL_DEBUG, "DEBUG", fmt, ##__VA_ARGS__)
+#define LOG_TRACE(fmt, ...) log_print(LEVEL_TRACE, "TRACE", fmt, ##__VA_ARGS__)
 
 /* -------- Match exact evdev name -------- */
 static int matches_device(int fd, const char *target, const char *path) {
@@ -103,7 +119,9 @@ int main(int argc, char *argv[]) {
     if (argc < 4) {
         fprintf(stderr,
             "Remote Bridge version %s\n"
-            "Usage: %s <exact_remote_name> <server_ip> <server_port> [--debug]\n",
+            "Usage: %s <exact_remote_name> <server_ip> <server_port> [LOG_LEVEL]\n"
+            "\n"
+            "Log levels: ERROR, INFO (default), DEBUG, TRACE\n",
             VERSION, argv[0]);
         return 1;
     }
@@ -112,18 +130,18 @@ int main(int argc, char *argv[]) {
     const char *server_ip   = argv[2];
     int server_port         = atoi(argv[3]);
 
-    for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--debug") == 0) {
-            debug = 1;
-            break;
-        }
+    if (argc >= 5) {
+        if (strcasecmp(argv[4], "TRACE") == 0) log_level = LEVEL_TRACE;
+        else if (strcasecmp(argv[4], "DEBUG") == 0) log_level = LEVEL_DEBUG;
+        else if (strcasecmp(argv[4], "INFO") == 0)  log_level = LEVEL_INFO;
+        else if (strcasecmp(argv[4], "ERROR") == 0) log_level = LEVEL_ERROR;
     }
 
-    if (debug) LOG_INFO("Debug logging enabled\n");
-    LOG_INFO("Remote Bridge version %s\n", VERSION);
-    LOG_DEBUG("Remote Name: \"%s\"\n", remote_name);
-    LOG_DEBUG("Server IP:   \"%s\"\n", server_ip);
-    LOG_DEBUG("Server Port: %d\n", server_port);
+    LOG_ALWAYS("Remote Bridge version %s\n", VERSION);
+    LOG_ALWAYS("Remote Name: \"%s\"\n", remote_name);
+    LOG_ALWAYS("Server IP:   \"%s\"\n", server_ip);
+    LOG_ALWAYS("Server Port: %d\n", server_port);
+    LOG_ALWAYS("Log Level:   %d\n", log_level);
     LOG_INFO("Connecting to %s:%d\n", server_ip, server_port);
 
     /* UDP socket */
@@ -232,9 +250,8 @@ int main(int argc, char *argv[]) {
                     break;
                 }
 
-                LOG_DEBUG("Event: type=%d, code=%d, value=%d\n", ev.type, ev.code, ev.value);
-
                 if (ev.type == EV_KEY) {
+                    LOG_TRACE("Key Event: code=%d, value=%d\n", ev.code, ev.value);
                     pkt.timestamp_ms =
                         htonl((uint32_t)(now_ms() & 0xFFFFFFFF));
                     pkt.key_code = htons((uint16_t)ev.code);
