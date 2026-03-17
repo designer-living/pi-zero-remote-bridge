@@ -309,11 +309,23 @@ int main(int argc, char *argv[]) {
                     if (ie->len && strncmp(ie->name, "event", 5) == 0) {
 
                         if ((ie->mask & IN_DELETE) && evfd >= 0) {
-                            /* Belt-and-suspenders: catch delete if POLLHUP missed it */
-                            LOG_DEBUG("inotify IN_DELETE for %s, closing evdev fd\n",
-                                      ie->name);
-                            close(evfd);
-                            evfd = -1;
+                            char deleted_path[256];
+                            snprintf(deleted_path, sizeof(deleted_path), INPUT_DIR "/%s", ie->name);
+
+                            char evfd_path[256];
+                            char evfd_proc_path[64];
+                            snprintf(evfd_proc_path, sizeof(evfd_proc_path), "/proc/self/fd/%d", evfd);
+                            ssize_t path_len = readlink(evfd_proc_path, evfd_path, sizeof(evfd_path) - 1);
+
+                            if (path_len != -1) {
+                                evfd_path[path_len] = '\0';
+                                if (strcmp(deleted_path, evfd_path) == 0) {
+                                    /* Belt-and-braces: catch delete if POLLHUP missed it */
+                                    LOG_DEBUG("inotify IN_DELETE for our device %s, closing evdev fd\n", ie->name);
+                                    close(evfd);
+                                    evfd = -1;
+                                }
+                            }
                         }
 
                         if ((ie->mask & (IN_CREATE | IN_ATTRIB | IN_MOVED_TO)) &&
