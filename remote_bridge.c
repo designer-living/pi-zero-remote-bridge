@@ -279,9 +279,9 @@ int main(int argc, char *argv[]) {
                                           (struct sockaddr *)&server,
                                           sizeof(server));
                     if (sent < 0) {
-                        LOG_DEBUG("Failed to send UDP packet: %s\n", strerror(errno));
+                        LOG_ERROR("Failed to send UDP packet: %s\n", strerror(errno));
                     } else {
-                        LOG_DEBUG("Sent UDP packet for key %d, value %d\n", ev.code, ev.value);
+                        LOG_TRACE("Sent UDP packet for key %d, value %d\n", ev.code, ev.value);
                     }
                 }
             }
