@@ -209,7 +209,7 @@ int main(int argc, char *argv[]) {
     closedir(d);
 
     if (evfd < 0) {
-        LOG_DEBUG("Remote not found during initial scan of " INPUT_DIR "\n");
+        LOG_INFO("Remote not found during initial scan of " INPUT_DIR "\n");
     }
 
     struct pollfd fds[2];
