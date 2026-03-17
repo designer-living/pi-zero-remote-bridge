@@ -49,6 +49,17 @@ enum {
 
 static int log_level = LEVEL_INFO;
 
+static const char* level_to_str(int level) {
+    switch (level) {
+        case LEVEL_ALWAYS: return "ALWAYS";
+        case LEVEL_ERROR:  return "ERROR";
+        case LEVEL_INFO:   return "INFO";
+        case LEVEL_DEBUG:  return "DEBUG";
+        case LEVEL_TRACE:  return "TRACE";
+        default:           return "UNKNOWN";
+    }
+}
+
 /* -------- Logging helper with UTC timestamp -------- */
 static void log_print(int level, const char *level_name, const char *fmt, ...) {
     if (level != LEVEL_ALWAYS && level > log_level) return;
@@ -141,8 +152,7 @@ int main(int argc, char *argv[]) {
     LOG_ALWAYS("Remote Name: \"%s\"\n", remote_name);
     LOG_ALWAYS("Server IP:   \"%s\"\n", server_ip);
     LOG_ALWAYS("Server Port: %d\n", server_port);
-    LOG_ALWAYS("Log Level:   %d\n", log_level);
-    LOG_INFO("Connecting to %s:%d\n", server_ip, server_port);
+    LOG_ALWAYS("Log Level:   %s\n", level_to_str(log_level));
 
     /* UDP socket */
     int sock = socket(AF_INET, SOCK_DGRAM, 0);
