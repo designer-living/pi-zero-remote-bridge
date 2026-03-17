@@ -170,8 +170,16 @@ sudo /usr/local/bin/remote_bridge "Remote Name" <SERVER_IP> <SERVER_PORT> --debu
     ```bash
     ls -l /dev/input
     ```
-3.  **Device Name**: The `REMOTE_NAME` must match the output of `evtest` *exactly*.
-4.  **UDP Connectivity**: Use `nc -u -l -p <PORT>` on your server to verify packets are arriving.
+    If you see nodes owned by `root:root` with `0600`, you need to set up a rule.
+3.  **udev vs mdev**: Minimal Alpine installations use `mdev` instead of `udev`. The provided `udev` rule won't work in this case. You can either:
+    - Install `eudev`: `apk add eudev && setup-devd udev`
+    - Or add an `mdev` rule to `/etc/mdev.conf`:
+      ```
+      event[0-9]+ root:input 660
+      ```
+      Then restart `mdev` (or just reboot).
+4.  **Device Name**: The `REMOTE_NAME` must match the output of `evtest` *exactly*.
+5.  **UDP Connectivity**: Use `nc -u -l -p <PORT>` on your server to verify packets are arriving.
 
 ---
 

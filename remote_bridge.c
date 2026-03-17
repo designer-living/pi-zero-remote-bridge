@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdarg.h>
 #include <string.h>
 #include <unistd.h>
 #include <fcntl.h>
@@ -141,7 +142,7 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    if (inotify_add_watch(ifd, INPUT_DIR, IN_CREATE | IN_DELETE) < 0) {
+    if (inotify_add_watch(ifd, INPUT_DIR, IN_CREATE | IN_ATTRIB | IN_DELETE | IN_MOVED_TO) < 0) {
         perror("inotify_add_watch");
         // Non-fatal, but we won't see hotplug events
     }
@@ -262,14 +263,18 @@ int main(int argc, char *argv[]) {
 
                     if (ie->len &&
                         strncmp(ie->name, "event", 5) == 0 &&
-                        (ie->mask & IN_CREATE) &&
+                        (ie->mask & (IN_CREATE | IN_ATTRIB | IN_MOVED_TO)) &&
                         evfd < 0) {
 
                         char path[256];
                         snprintf(path, sizeof(path),
                                  INPUT_DIR "/%s", ie->name);
 
-                        LOG_DEBUG("Hotplug detected: %s\n", path);
+                        LOG_DEBUG("Hotplug event detected (mask=0x%x): %s\n", ie->mask, path);
+
+                        /* Tiny sleep to let udev/mdev work on permissions if it just created */
+                        if (ie->mask & IN_CREATE) usleep(10000);
+
                         evfd = try_open_device(path, remote_name);
                         if (evfd >= 0) {
                             LOG_INFO("Remote connected\n");
