@@ -16,6 +16,10 @@
 #include <time.h>
 #include <stdarg.h>
 
+#ifndef VERSION
+#define VERSION "dev"
+#endif
+
 #define INPUT_DIR "/dev/input"
 #define MAX_NAME 256
 
@@ -98,8 +102,9 @@ static int try_open_device(const char *path, const char *target) {
 int main(int argc, char *argv[]) {
     if (argc < 4) {
         fprintf(stderr,
+            "Remote Bridge version %s\n"
             "Usage: %s <exact_remote_name> <server_ip> <server_port> [--debug]\n",
-            argv[0]);
+            VERSION, argv[0]);
         return 1;
     }
 
@@ -115,6 +120,7 @@ int main(int argc, char *argv[]) {
     }
 
     if (debug) LOG_INFO("Debug logging enabled\n");
+    LOG_INFO("Remote Bridge version %s\n", VERSION);
     LOG_DEBUG("Remote Name: \"%s\"\n", remote_name);
     LOG_DEBUG("Server IP:   \"%s\"\n", server_ip);
     LOG_DEBUG("Server Port: %d\n", server_port);

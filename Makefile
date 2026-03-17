@@ -1,7 +1,9 @@
 # Makefile for remote_bridge
 
+VERSION ?= dev
 CC = gcc
-CFLAGS = -O3 -Wall -Wextra
+DEFS = -DVERSION=\"$(VERSION)\"
+CFLAGS ?= -O3 -Wall -Wextra
 TARGET = remote_bridge
 SOURCE = remote_bridge.c
 
@@ -10,7 +12,7 @@ SOURCE = remote_bridge.c
 all: $(TARGET)
 
 $(TARGET): $(SOURCE)
-	$(CC) $(CFLAGS) -o $(TARGET) $(SOURCE)
+	$(CC) $(CFLAGS) $(DEFS) -o $(TARGET) $(SOURCE)
 
 clean:
 	rm -f $(TARGET)
