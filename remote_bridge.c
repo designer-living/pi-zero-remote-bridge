@@ -189,8 +189,11 @@ int main(int argc, char *argv[]) {
             snprintf(path, sizeof(path),
                      INPUT_DIR "/%s", ent->d_name);
             evfd = try_open_device(path, remote_name);
-            if (evfd >= 0)
+            if (evfd >= 0) {
+                LOG_INFO("Remote connected\n");
+                LOG_DEBUG("Device node opened at %s during initial scan\n", path);
                 break;
+            }
         }
     }
     closedir(d);
@@ -237,6 +240,7 @@ int main(int argc, char *argv[]) {
                         break;
                     if (errno == ENODEV) {
                         LOG_INFO("Remote disconnected\n");
+                        LOG_DEBUG("Device node was at fd %d\n", evfd);
                         close(evfd);
                         evfd = -1;
                         break;
@@ -298,6 +302,7 @@ int main(int argc, char *argv[]) {
                         evfd = try_open_device(path, remote_name);
                         if (evfd >= 0) {
                             LOG_INFO("Remote connected\n");
+                            LOG_DEBUG("Device node opened at %s\n", path);
                         }
                     }
 
