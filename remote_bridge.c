@@ -48,6 +48,8 @@ enum {
 };
 
 static int log_level = LEVEL_INFO;
+static int repeat_delay_ms = 0;
+static uint64_t last_repeat_send_ms = 0;
 
 static const char* level_to_str(int level) {
     switch (level) {
@@ -132,9 +134,10 @@ int main(int argc, char *argv[]) {
     if (argc < 4) {
         fprintf(stderr,
             "Remote Bridge version %s\n"
-            "Usage: %s <exact_remote_name> <server_ip> <server_port> [LOG_LEVEL]\n"
+            "Usage: %s <exact_remote_name> <server_ip> <server_port> [LOG_LEVEL] [REPEAT_DELAY_MS]\n"
             "\n"
-            "Log levels: ERROR, INFO (default), DEBUG, TRACE\n",
+            "Log levels: ERROR, INFO (default), DEBUG, TRACE\n"
+            "Repeat delay: Throttles repeat events (value=2) to every X ms (default 0=disabled)\n",
             VERSION, argv[0]);
         return 1;
     }
@@ -150,11 +153,16 @@ int main(int argc, char *argv[]) {
         else if (strcasecmp(argv[4], "ERROR") == 0) log_level = LEVEL_ERROR;
     }
 
+    if (argc >= 6) {
+        repeat_delay_ms = atoi(argv[5]);
+    }
+
     LOG_ALWAYS("Remote Bridge version %s\n", VERSION);
     LOG_ALWAYS("Remote Name: \"%s\"\n", remote_name);
     LOG_ALWAYS("Server IP:   \"%s\"\n", server_ip);
     LOG_ALWAYS("Server Port: %d\n", server_port);
     LOG_ALWAYS("Log Level:   %s\n", level_to_str(log_level));
+    LOG_ALWAYS("Repeat Delay: %d ms\n", repeat_delay_ms);
 
     /* UDP socket */
     int sock = socket(AF_INET, SOCK_DGRAM, 0);
@@ -278,6 +286,17 @@ int main(int argc, char *argv[]) {
 
                     if (ev.type == EV_KEY) {
                         LOG_TRACE("Key Event: code=%d, value=%d\n", ev.code, ev.value);
+
+                        /* Throttle repeat events (value=2) if repeat_delay_ms is set */
+                        if (ev.value == 2 && repeat_delay_ms > 0) {
+                            uint64_t now = now_ms();
+                            if (now - last_repeat_send_ms < (uint64_t)repeat_delay_ms) {
+                                LOG_TRACE("Throttling repeat event for key %d\n", ev.code);
+                                continue;
+                            }
+                            last_repeat_send_ms = now;
+                        }
+
                         pkt.timestamp_ms =
                             htonl((uint32_t)(now_ms() & 0xFFFFFFFF));
                         pkt.key_code = htons((uint16_t)ev.code);
