@@ -48,8 +48,42 @@ enum {
 };
 
 static int log_level = LEVEL_INFO;
-static int repeat_delay_ms = 0;
-static uint64_t last_repeat_send_ms = 0;
+
+#define MAX_MAPPINGS 32
+
+typedef struct {
+    char name[MAX_NAME];
+    struct sockaddr_in server_addr;
+    int evfd;
+    int repeat_delay_ms;
+    uint64_t last_repeat_send_ms;
+} Mapping;
+
+static Mapping mappings[MAX_MAPPINGS];
+static int num_mappings = 0;
+
+static int add_mapping(const char *name, const char *ip, int port, int delay) {
+    if (num_mappings >= MAX_MAPPINGS) {
+        LOG_ERROR("Maximum number of mappings (%d) reached\n", MAX_MAPPINGS);
+        return -1;
+    }
+    Mapping *m = &mappings[num_mappings++];
+    strncpy(m->name, name, MAX_NAME - 1);
+    m->name[MAX_NAME - 1] = '\0';
+    m->evfd = -1;
+    m->repeat_delay_ms = delay;
+    m->last_repeat_send_ms = 0;
+
+    memset(&m->server_addr, 0, sizeof(m->server_addr));
+    m->server_addr.sin_family = AF_INET;
+    m->server_addr.sin_port   = htons(port);
+    if (!inet_aton(ip, &m->server_addr.sin_addr)) {
+        LOG_ERROR("Invalid IP address: %s\n", ip);
+        num_mappings--;
+        return -1;
+    }
+    return 0;
+}
 
 static const char* level_to_str(int level) {
     switch (level) {
@@ -92,90 +126,124 @@ static void log_print(int level, const char *level_name, const char *fmt, ...) {
 #define LOG_DEBUG(fmt, ...) log_print(LEVEL_DEBUG, "DEBUG", fmt, ##__VA_ARGS__)
 #define LOG_TRACE(fmt, ...) log_print(LEVEL_TRACE, "TRACE", fmt, ##__VA_ARGS__)
 
-/* -------- Match exact evdev name -------- */
-static int matches_device(int fd, const char *target, const char *path) {
+static int find_available_mapping(int fd, const char *path) {
     char name[MAX_NAME] = {0};
 
     if (ioctl(fd, EVIOCGNAME(sizeof(name)), name) < 0) {
         LOG_DEBUG("Failed to get name for %s: %s\n", path, strerror(errno));
-        return 0;
+        return -1;
     }
 
     LOG_DEBUG("Checking device %s: name=\"%s\"\n", path, name);
 
-    if (strcmp(name, target) == 0) {
-        LOG_INFO("Matched device: %s at %s\n", name, path);
-        return 1;
+    for (int i = 0; i < num_mappings; i++) {
+        if (mappings[i].evfd < 0 && strcmp(mappings[i].name, name) == 0) {
+            LOG_INFO("Matched device: %s at %s for mapping %d\n", name, path, i);
+            return i;
+        }
     }
 
-    return 0;
+    return -1;
 }
 
-static int try_open_device(const char *path, const char *target) {
-    int fd = open(path, O_RDONLY | O_NONBLOCK);
-    if (fd < 0) {
-        if (errno != EACCES) {
-            LOG_DEBUG("Failed to open %s: %s\n", path, strerror(errno));
-        } else {
-            LOG_DEBUG("Permission denied for %s (try sudo?)\n", path);
-        }
+static int load_config(const char *filename) {
+    FILE *f = fopen(filename, "r");
+    if (!f) {
+        LOG_ERROR("Failed to open config file %s: %s\n", filename, strerror(errno));
         return -1;
     }
 
-    if (matches_device(fd, target, path))
-        return fd;
+    char line[512];
+    while (fgets(line, sizeof(line), f)) {
+        char *p = line;
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p == '#' || *p == '\n' || *p == '\0') continue;
 
-    close(fd);
-    return -1;
+        // Strip trailing newline
+        size_t len = strlen(p);
+        while (len > 0 && (p[len - 1] == '\n' || p[len - 1] == '\r')) {
+            p[len - 1] = '\0';
+            len--;
+        }
+
+        char *eq = strchr(p, '=');
+        if (!eq) continue;
+        *eq = '\0';
+        char *key = p;
+        char *val = eq + 1;
+
+        // Trim quotes from val
+        if (*val == '"') {
+            val++;
+            char *last_quote = strrchr(val, '"');
+            if (last_quote) *last_quote = '\0';
+        }
+
+        if (strcasecmp(key, "LOG_LEVEL") == 0) {
+            if (strcasecmp(val, "TRACE") == 0) log_level = LEVEL_TRACE;
+            else if (strcasecmp(val, "DEBUG") == 0) log_level = LEVEL_DEBUG;
+            else if (strcasecmp(val, "INFO") == 0)  log_level = LEVEL_INFO;
+            else if (strcasecmp(val, "ERROR") == 0) log_level = LEVEL_ERROR;
+        } else if (strcasecmp(key, "REMOTE") == 0) {
+            char name[MAX_NAME], ip[64];
+            int port, delay = 0;
+            int n = sscanf(val, "%[^,],%[^,],%d,%d", name, ip, &port, &delay);
+            if (n >= 3) {
+                add_mapping(name, ip, port, delay);
+            } else {
+                LOG_ERROR("Invalid REMOTE line: %s=%s\n", key, val);
+            }
+        }
+    }
+    fclose(f);
+    return 0;
 }
 
 /* -------- Main -------- */
 int main(int argc, char *argv[]) {
-    if (argc < 4) {
+    if (argc >= 3 && strcmp(argv[1], "-c") == 0) {
+        if (load_config(argv[2]) < 0) return 1;
+    } else if (argc >= 4) {
+        const char *remote_name = argv[1];
+        const char *server_ip   = argv[2];
+        int server_port         = atoi(argv[3]);
+        int delay = 0;
+
+        if (argc >= 5) {
+            if (strcasecmp(argv[4], "TRACE") == 0) log_level = LEVEL_TRACE;
+            else if (strcasecmp(argv[4], "DEBUG") == 0) log_level = LEVEL_DEBUG;
+            else if (strcasecmp(argv[4], "INFO") == 0)  log_level = LEVEL_INFO;
+            else if (strcasecmp(argv[4], "ERROR") == 0) log_level = LEVEL_ERROR;
+        }
+
+        if (argc >= 6) {
+            delay = atoi(argv[5]);
+        }
+        add_mapping(remote_name, server_ip, server_port, delay);
+    } else {
         fprintf(stderr,
             "Remote Bridge version %s\n"
             "Usage: %s <exact_remote_name> <server_ip> <server_port> [LOG_LEVEL] [REPEAT_DELAY_MS]\n"
+            "   or: %s -c <config_file>\n"
             "\n"
             "Log levels: ERROR, INFO (default), DEBUG, TRACE\n"
             "Repeat delay: Throttles repeat events (value=2) to every X ms (default 0=disabled)\n",
-            VERSION, argv[0]);
+            VERSION, argv[0], argv[0]);
         return 1;
     }
 
-    const char *remote_name = argv[1];
-    const char *server_ip   = argv[2];
-    int server_port         = atoi(argv[3]);
-
-    if (argc >= 5) {
-        if (strcasecmp(argv[4], "TRACE") == 0) log_level = LEVEL_TRACE;
-        else if (strcasecmp(argv[4], "DEBUG") == 0) log_level = LEVEL_DEBUG;
-        else if (strcasecmp(argv[4], "INFO") == 0)  log_level = LEVEL_INFO;
-        else if (strcasecmp(argv[4], "ERROR") == 0) log_level = LEVEL_ERROR;
-    }
-
-    if (argc >= 6) {
-        repeat_delay_ms = atoi(argv[5]);
-    }
-
     LOG_ALWAYS("Remote Bridge version %s\n", VERSION);
-    LOG_ALWAYS("Remote Name: \"%s\"\n", remote_name);
-    LOG_ALWAYS("Server IP:   \"%s\"\n", server_ip);
-    LOG_ALWAYS("Server Port: %d\n", server_port);
-    LOG_ALWAYS("Log Level:   %s\n", level_to_str(log_level));
-    LOG_ALWAYS("Repeat Delay: %d ms\n", repeat_delay_ms);
+    LOG_ALWAYS("Log Level: %s\n", level_to_str(log_level));
+    for (int i = 0; i < num_mappings; i++) {
+        LOG_ALWAYS("Mapping %d: Remote=\"%s\", Server=%s:%d, Delay=%dms\n",
+            i, mappings[i].name, inet_ntoa(mappings[i].server_addr.sin_addr),
+            ntohs(mappings[i].server_addr.sin_port), mappings[i].repeat_delay_ms);
+    }
 
     /* UDP socket */
     int sock = socket(AF_INET, SOCK_DGRAM, 0);
     if (sock < 0) {
         perror("socket");
-        return 1;
-    }
-
-    struct sockaddr_in server = {0};
-    server.sin_family = AF_INET;
-    server.sin_port   = htons(server_port);
-    if (!inet_aton(server_ip, &server.sin_addr)) {
-        LOG_ERROR("Invalid IP address: %s\n", server_ip);
         return 1;
     }
 
@@ -191,11 +259,9 @@ int main(int argc, char *argv[]) {
         // Non-fatal, but we won't see hotplug events
     }
 
-    int evfd = -1;
+    LOG_INFO("Scanning " INPUT_DIR " for remotes...\n");
 
-    LOG_INFO("Waiting for remote matching \"%s\"...\n", remote_name);
-
-    /* Initial scan (remote may already be connected) */
+    /* Initial scan (remotes may already be connected) */
     DIR *d = opendir(INPUT_DIR);
     if (!d) {
         perror("opendir " INPUT_DIR);
@@ -208,38 +274,43 @@ int main(int argc, char *argv[]) {
             char path[256];
             snprintf(path, sizeof(path),
                      INPUT_DIR "/%s", ent->d_name);
-            evfd = try_open_device(path, remote_name);
-            if (evfd >= 0) {
-                LOG_INFO("Remote connected\n");
-                LOG_DEBUG("Device node opened at %s during initial scan\n", path);
-                break;
+            int fd = open(path, O_RDONLY | O_NONBLOCK);
+            if (fd >= 0) {
+                int m_idx = find_available_mapping(fd, path);
+                if (m_idx >= 0) {
+                    mappings[m_idx].evfd = fd;
+                } else {
+                    close(fd);
+                }
             }
         }
     }
     closedir(d);
 
-    if (evfd < 0) {
-        LOG_INFO("Remote not found during initial scan of " INPUT_DIR "\n");
+    for (int i = 0; i < num_mappings; i++) {
+        if (mappings[i].evfd < 0) {
+            LOG_INFO("Mapping %d (\"%s\") not found during initial scan\n", i, mappings[i].name);
+        }
     }
 
-    struct pollfd fds[2];
+    struct pollfd fds[MAX_MAPPINGS + 1];
+    int mapping_indices[MAX_MAPPINGS];
     struct input_event ev;
     struct Packet pkt;
 
     while (1) {
         int nfds = 0;
-        int evfd_idx = -1;
-        int ifd_idx  = -1;
-
-        if (evfd >= 0) {
-            evfd_idx = nfds;
-            fds[nfds++] = (struct pollfd){
-                .fd = evfd,
-                .events = POLLIN
-            };
+        for (int i = 0; i < num_mappings; i++) {
+            if (mappings[i].evfd >= 0) {
+                mapping_indices[nfds] = i;
+                fds[nfds++] = (struct pollfd){
+                    .fd = mappings[i].evfd,
+                    .events = POLLIN
+                };
+            }
         }
 
-        ifd_idx = nfds;
+        int ifd_idx = nfds;
         fds[nfds++] = (struct pollfd){
             .fd = ifd,
             .events = POLLIN
@@ -254,25 +325,24 @@ int main(int argc, char *argv[]) {
         }
 
         /* ---- evdev events ---- */
-        if (evfd_idx >= 0) {
-            short revents = fds[evfd_idx].revents;
+        for (int i = 0; i < ifd_idx; i++) {
+            int m_idx = mapping_indices[i];
+            short revents = fds[i].revents;
 
             /* Disconnect: kernel raises POLLHUP/POLLERR on BT HID removal */
             if (revents & (POLLHUP | POLLERR)) {
-                LOG_INFO("Remote disconnected (POLLHUP/POLLERR on evdev fd)\n");
-                LOG_DEBUG("Closing stale evdev fd %d\n", evfd);
-                close(evfd);
-                evfd = -1;
+                LOG_INFO("Remote \"%s\" disconnected (POLLHUP/POLLERR)\n", mappings[m_idx].name);
+                close(mappings[m_idx].evfd);
+                mappings[m_idx].evfd = -1;
             } else if (revents & POLLIN) {
                 while (1) {
-                    ssize_t n = read(evfd, &ev, sizeof(ev));
+                    ssize_t n = read(mappings[m_idx].evfd, &ev, sizeof(ev));
                     if (n < 0) {
                         if (errno == EAGAIN || errno == EINTR) break;
                         if (errno == ENODEV) {
-                            LOG_INFO("Remote disconnected (ENODEV on read)\n");
-                            LOG_DEBUG("Closing evdev fd %d\n", evfd);
-                            close(evfd);
-                            evfd = -1;
+                            LOG_INFO("Remote \"%s\" disconnected (ENODEV)\n", mappings[m_idx].name);
+                            close(mappings[m_idx].evfd);
+                            mappings[m_idx].evfd = -1;
                             break;
                         }
                         perror("read evdev");
@@ -280,21 +350,20 @@ int main(int argc, char *argv[]) {
                     }
 
                     if (n != sizeof(ev)) {
-                        LOG_DEBUG("Short read from evdev: expected %zu, got %zd\n", sizeof(ev), n);
                         break;
                     }
 
                     if (ev.type == EV_KEY) {
-                        LOG_TRACE("Key Event: code=%d, value=%d\n", ev.code, ev.value);
+                        LOG_TRACE("Key Event (%s): code=%d, value=%d\n", mappings[m_idx].name, ev.code, ev.value);
 
                         /* Throttle repeat events (value=2) if repeat_delay_ms is set */
-                        if (ev.value == 2 && repeat_delay_ms > 0) {
+                        if (ev.value == 2 && mappings[m_idx].repeat_delay_ms > 0) {
                             uint64_t now = now_ms();
-                            if (now - last_repeat_send_ms < (uint64_t)repeat_delay_ms) {
+                            if (now - mappings[m_idx].last_repeat_send_ms < (uint64_t)mappings[m_idx].repeat_delay_ms) {
                                 LOG_TRACE("Throttling repeat event for key %d\n", ev.code);
                                 continue;
                             }
-                            last_repeat_send_ms = now;
+                            mappings[m_idx].last_repeat_send_ms = now;
                         }
 
                         pkt.timestamp_ms =
@@ -305,8 +374,8 @@ int main(int argc, char *argv[]) {
 
                         ssize_t sent = sendto(sock,
                                               &pkt, sizeof(pkt), 0,
-                                              (struct sockaddr *)&server,
-                                              sizeof(server));
+                                              (struct sockaddr *)&mappings[m_idx].server_addr,
+                                              sizeof(struct sockaddr_in));
                         if (sent < 0) {
                             LOG_ERROR("Failed to send UDP packet: %s\n", strerror(errno));
                         } else {
@@ -328,39 +397,38 @@ int main(int argc, char *argv[]) {
                     struct inotify_event *ie = (struct inotify_event *)p;
 
                     if (ie->len && strncmp(ie->name, "event", 5) == 0) {
+                        char path[256];
+                        snprintf(path, sizeof(path), INPUT_DIR "/%s", ie->name);
 
-                        if ((ie->mask & IN_DELETE) && evfd >= 0) {
-                            char deleted_path[256];
-                            snprintf(deleted_path, sizeof(deleted_path), INPUT_DIR "/%s", ie->name);
+                        if ((ie->mask & IN_DELETE)) {
+                            for (int i = 0; i < num_mappings; i++) {
+                                if (mappings[i].evfd >= 0) {
+                                    char evfd_path[256];
+                                    char evfd_proc_path[64];
+                                    snprintf(evfd_proc_path, sizeof(evfd_proc_path), "/proc/self/fd/%d", mappings[i].evfd);
+                                    ssize_t path_len = readlink(evfd_proc_path, evfd_path, sizeof(evfd_path) - 1);
 
-                            char evfd_path[256];
-                            char evfd_proc_path[64];
-                            snprintf(evfd_proc_path, sizeof(evfd_proc_path), "/proc/self/fd/%d", evfd);
-                            ssize_t path_len = readlink(evfd_proc_path, evfd_path, sizeof(evfd_path) - 1);
-
-                            if (path_len != -1) {
-                                evfd_path[path_len] = '\0';
-                                if (strcmp(deleted_path, evfd_path) == 0) {
-                                    /* Belt-and-braces: catch delete if POLLHUP missed it */
-                                    LOG_DEBUG("inotify IN_DELETE for our device %s, closing evdev fd\n", ie->name);
-                                    close(evfd);
-                                    evfd = -1;
+                                    if (path_len != -1) {
+                                        evfd_path[path_len] = '\0';
+                                        if (strcmp(path, evfd_path) == 0) {
+                                            LOG_INFO("Remote \"%s\" disconnected (inotify)\n", mappings[i].name);
+                                            close(mappings[i].evfd);
+                                            mappings[i].evfd = -1;
+                                        }
+                                    }
                                 }
                             }
                         }
 
-                        if ((ie->mask & (IN_CREATE | IN_ATTRIB | IN_MOVED_TO)) &&
-                            evfd < 0) {
-                            char path[256];
-                            snprintf(path, sizeof(path),
-                                     INPUT_DIR "/%s", ie->name);
-
-                            LOG_DEBUG("Hotplug event (mask=0x%x): %s\n", ie->mask, path);
-
-                            evfd = try_open_device(path, remote_name);
-                            if (evfd >= 0) {
-                                LOG_INFO("Remote reconnected\n");
-                                LOG_DEBUG("Device node opened at %s\n", path);
+                        if ((ie->mask & (IN_CREATE | IN_ATTRIB | IN_MOVED_TO))) {
+                            int fd = open(path, O_RDONLY | O_NONBLOCK);
+                            if (fd >= 0) {
+                                int m_idx = find_available_mapping(fd, path);
+                                if (m_idx >= 0) {
+                                    mappings[m_idx].evfd = fd;
+                                } else {
+                                    close(fd);
+                                }
                             }
                         }
                     }
