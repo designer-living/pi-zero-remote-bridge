@@ -66,19 +66,33 @@ Look for your IR receiver in the list and copy the exact name.
 ### 3. Test Manually (Optional)
 You can run the binary directly to test it with verbose logging:
 ```bash
-./remote_bridge "Your Remote Name" 192.168.1.100 9999 --debug
+# Single remote (legacy mode)
+./remote_bridge "Your Remote Name" 192.168.1.100 9999 DEBUG
+
+# Multiple remotes (config file mode)
+./remote_bridge -c remote-bridge.conf
 ```
 
 ### 4. Configure
-Edit the configuration file and set your remote name, server IP, and port:
+Edit the configuration file and set your remote(s), server IP(s), and port(s):
 ```bash
 nano remote-bridge.conf
 ```
 
-**Important**: Make sure to set all three values correctly:
-- REMOTE_NAME: The exact name from evtest (in quotes)
-- SERVER_IP: Your server's IP address
-- SERVER_PORT: Your server's port number
+**New format (supporting multiple remotes)**:
+```conf
+LOG_LEVEL="INFO"
+
+# Format: REMOTE="<exact_remote_name>,<server_ip>,<server_port>,[repeat_delay_ms]"
+REMOTE="IR-receiver,192.168.1.100,9999,0"
+REMOTE="Second-Remote,192.168.1.101,9999,100"
+```
+
+**Important**: Make sure to set the values correctly:
+- REMOTE_NAME: The exact name from evtest.
+- SERVER_IP: Your server's IP address.
+- SERVER_PORT: Your server's port number.
+- REPEAT_DELAY_MS: (Optional) Throttles repeat events (value=2) to every X ms.
 
 ### 4. Install
 **Copy the config file first, then install:**
@@ -158,9 +172,13 @@ sudo rc-update del remote-bridge default
 ## Troubleshooting
 
 ### Debug Mode
-Run the binary manually with `--debug` to see detailed logs about device discovery and event processing:
+Run the binary manually with the `DEBUG` log level to see detailed logs about device discovery and event processing:
 ```bash
-sudo /usr/local/bin/remote_bridge "Remote Name" <SERVER_IP> <SERVER_PORT> --debug
+# Using config file
+sudo /usr/local/bin/remote_bridge -c /etc/remote-bridge.conf
+
+# Using command line args (legacy mode)
+sudo /usr/local/bin/remote_bridge "Remote Name" <SERVER_IP> <SERVER_PORT> DEBUG
 ```
 
 ### Common Issues on Alpine Linux

@@ -20,19 +20,11 @@ checkconfig() {
         eerror "Configuration file /etc/remote-bridge.conf not found"
         return 1
     fi
-    # shellcheck source=/dev/null
-    . /etc/remote-bridge.conf
-    if [ -z "${REMOTE_NAME}" ] || [ -z "${SERVER_IP}" ] || [ -z "${SERVER_PORT}" ]; then
-        eerror "REMOTE_NAME, SERVER_IP, and SERVER_PORT must be set in /etc/remote-bridge.conf"
-        return 1
-    fi
     return 0
 }
 
 start_pre() {
     checkconfig || return 1
-    # shellcheck source=/dev/null
-    . /etc/remote-bridge.conf
-    command_args="\"${REMOTE_NAME}\" \"${SERVER_IP}\" \"${SERVER_PORT}\" \"${LOG_LEVEL:-INFO}\" \"${REPEAT_DELAY_MS:-0}\""
+    command_args="-c /etc/remote-bridge.conf"
     checkpath --file --mode 0640 --owner remote-bridge:root /var/log/remote-bridge.log
 }
