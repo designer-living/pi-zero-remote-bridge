@@ -1,0 +1,13 @@
+[Unit]
+Description=Bluetooth Pairing Web Interface
+After=bluetooth.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/usr/local/share/remote-bridge
+ExecStart=/usr/local/bin/bluetooth-pair-web
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

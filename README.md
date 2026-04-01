@@ -155,6 +155,47 @@ sudo rc-update del remote-bridge default
 
 ---
 
+## Bluetooth Pairing Web Interface
+
+The project includes a simple web interface to help you pair Bluetooth remotes without needing to use the command line directly.
+
+### Features
+- **Scan Toggle**: Turn Bluetooth scanning on and off to discover new devices.
+- **Device List**: See a list of all discovered Bluetooth devices.
+- **Pair & Trust**: One-click pairing, trusting, and connecting to a device.
+
+### Accessing the Interface
+By default, the interface runs on port **8080**. You can access it by navigating to your Pi's IP address in a web browser:
+`http://<your-pi-ip>:8080`
+
+### Managing the Web Service (systemd)
+The web interface is managed by the `bluetooth-pair-web` service.
+
+**Check Status:**
+```bash
+sudo systemctl status bluetooth-pair-web
+```
+
+**Restart:**
+```bash
+sudo systemctl restart bluetooth-pair-web
+```
+
+**View Logs:**
+```bash
+sudo journalctl -u bluetooth-pair-web -f
+```
+
+**Stop / Disable:**
+```bash
+sudo systemctl stop bluetooth-pair-web
+sudo systemctl disable bluetooth-pair-web
+```
+
+*Note: This service requires `python3` and `bluez` (which includes `bluetoothctl`) to be installed on your system.*
+
+---
+
 ## Troubleshooting
 
 ### Debug Mode

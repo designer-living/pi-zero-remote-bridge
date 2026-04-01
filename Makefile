@@ -20,6 +20,10 @@ clean:
 install: $(TARGET)
 	@echo "Installing remote_bridge..."
 	sudo install -m 755 $(TARGET) /usr/local/bin/
+	@echo "Installing bluetooth_pair_web..."
+	sudo install -m 755 bluetooth_pair_web.py /usr/local/bin/bluetooth-pair-web
+	sudo mkdir -p /usr/local/share/remote-bridge/web
+	sudo install -m 644 web/index.html /usr/local/share/remote-bridge/web/
 	@echo "Installing udev rule..."
 	sudo install -m 644 99-remote-bridge.rules /etc/udev/rules.d/
 	@echo "Creating dedicated user..."
@@ -39,12 +43,15 @@ install: $(TARGET)
 	@if command -v systemctl >/dev/null 2>&1 && systemctl --version >/dev/null 2>&1; then \
 		echo "Installing systemd service..."; \
 		sudo install -m 644 remote-bridge.service /etc/systemd/system/; \
+		sudo install -m 644 bluetooth-pair-web.service /etc/systemd/system/; \
 		sudo systemctl daemon-reload; \
-		echo "Enabling and starting service..."; \
+		echo "Enabling and starting services..."; \
 		sudo systemctl enable remote-bridge; \
 		sudo systemctl start remote-bridge; \
+		sudo systemctl enable bluetooth-pair-web; \
+		sudo systemctl start bluetooth-pair-web; \
 		echo ""; \
-		echo "Service 'remote-bridge' has been enabled and started."; \
+		echo "Services 'remote-bridge' and 'bluetooth-pair-web' have been enabled and started."; \
 		echo "If necessary, configure /etc/remote-bridge.conf and then restart the service:"; \
 		echo "  sudo systemctl restart remote-bridge"; \
 		echo "To follow logs:"; \
@@ -80,6 +87,9 @@ uninstall:
 	fi
 	sudo rm -f /etc/udev/rules.d/99-remote-bridge.rules
 	sudo rm -f /usr/local/bin/$(TARGET)
+	sudo rm -f /usr/local/bin/bluetooth-pair-web
+	sudo rm -rf /usr/local/share/remote-bridge/web
+	sudo rm -f /etc/systemd/system/bluetooth-pair-web.service
 	@echo "Removing dedicated user..."
 	@if command -v userdel >/dev/null 2>&1; then \
 		id -u remote-bridge >/dev/null 2>&1 && sudo userdel remote-bridge || true; \

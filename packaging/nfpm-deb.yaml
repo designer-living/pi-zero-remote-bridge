@@ -32,6 +32,21 @@ contents:
     file_info:
       mode: 0644
 
+  - src: bluetooth_pair_web.py
+    dst: /usr/local/bin/bluetooth-pair-web
+    file_info:
+      mode: 0755
+
+  - src: web/index.html
+    dst: /usr/local/share/remote-bridge/web/index.html
+    file_info:
+      mode: 0644
+
+  - src: bluetooth-pair-web.service
+    dst: /etc/systemd/system/bluetooth-pair-web.service
+    file_info:
+      mode: 0644
+
 scripts:
   postinstall: packaging/scripts/postinstall-deb.sh
   preremove: packaging/scripts/preremove-deb.sh

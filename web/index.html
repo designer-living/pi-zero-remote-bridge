@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Bluetooth Remote Pairing</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body { font-family: sans-serif; max-width: 600px; margin: 20px auto; padding: 10px; }
+        .device { border: 1px solid #ccc; padding: 10px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; border-radius: 5px; }
+        .device span { font-weight: bold; }
+        .device .mac { font-family: monospace; color: #666; font-size: 0.9em; }
+        button { padding: 10px 15px; cursor: pointer; border: none; border-radius: 5px; }
+        .btn-scan { background-color: #007bff; color: white; width: 100%; margin-bottom: 20px; font-size: 1.1em; }
+        .btn-pair { background-color: #28a745; color: white; }
+        .btn-pair:disabled { background-color: #ccc; }
+        .scanning { background-color: #dc3545; }
+        .status { margin-bottom: 20px; font-style: italic; color: #555; }
+        #message { padding: 10px; margin-bottom: 20px; border-radius: 5px; display: none; }
+        .success { background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+        .error { background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+    </style>
+</head>
+<body>
+    <h1>Pair Bluetooth Remote</h1>
+    <div id="message"></div>
+    <div class="status" id="scan-status">Scan is OFF</div>
+    <button class="btn-scan" id="toggle-scan" onclick="toggleScan()">Turn Scan ON</button>
+    
+    <h2>Discovered Devices</h2>
+    <div id="device-list">
+        <p>No devices found yet. Make sure scan is on.</p>
+    </div>
+
+    <script>
+        let isScanning = false;
+        let refreshInterval = null;
+
+        function showMessage(msg, isError = false) {
+            const div = document.getElementById('message');
+            div.textContent = msg;
+            div.className = isError ? 'error' : 'success';
+            div.style.display = 'block';
+            setTimeout(() => { div.style.display = 'none'; }, 5000);
+        }
+
+        async function toggleScan() {
+            const btn = document.getElementById('toggle-scan');
+            const status = document.getElementById('scan-status');
+            const newState = !isScanning;
+            
+            try {
+                const resp = await fetch(`/api/scan/${newState ? 'on' : 'off'}`, { method: 'POST' });
+                if (resp.ok) {
+                    isScanning = newState;
+                    btn.textContent = `Turn Scan ${isScanning ? 'OFF' : 'ON'}`;
+                    btn.classList.toggle('scanning', isScanning);
+                    status.textContent = `Scan is ${isScanning ? 'ON' : 'OFF'}`;
+                    
+                    if (isScanning) {
+                        refreshDevices();
+                        refreshInterval = setInterval(refreshDevices, 3000);
+                    } else {
+                        clearInterval(refreshInterval);
+                    }
+                } else {
+                    showMessage("Failed to toggle scan", true);
+                }
+            } catch (e) {
+                showMessage("Error: " + e.message, true);
+            }
+        }
+
+        async function refreshDevices() {
+            try {
+                const resp = await fetch('/api/devices');
+                if (resp.ok) {
+                    const devices = await resp.json();
+                    const list = document.getElementById('device-list');
+                    if (devices.length === 0) {
+                        list.innerHTML = '<p>No devices found yet. Make sure scan is on.</p>';
+                        return;
+                    }
+                    list.innerHTML = devices.map(d => `
+                        <div class="device">
+                            <div>
+                                <span class="mac">${d.mac}</span><br>
+                                <span>${d.name || 'Unknown'}</span>
+                            </div>
+                            <button class="btn-pair" onclick="pairDevice('${d.mac}')" ${d.paired ? 'disabled' : ''}>
+                                ${d.paired ? 'Paired' : 'Pair & Trust'}
+                            </button>
+                        </div>
+                    `).join('');
+                }
+            } catch (e) {
+                console.error("Failed to refresh devices", e);
+            }
+        }
+
+        async function pairDevice(mac) {
+            showMessage(`Pairing with ${mac}...`);
+            try {
+                const resp = await fetch(`/api/pair/${mac}`, { method: 'POST' });
+                const result = await resp.json();
+                if (resp.ok) {
+                    showMessage(`Successfully paired and trusted ${mac}!`);
+                    refreshDevices();
+                } else {
+                    showMessage(`Failed to pair: ${result.error}`, true);
+                }
+            } catch (e) {
+                showMessage("Error: " + e.message, true);
+            }
+        }
+
+        // Initial check if scanning is already on (would need an API for that)
+        // For now, assume it's off on start.
+        refreshDevices();
+    </script>
+</body>
+</html>
