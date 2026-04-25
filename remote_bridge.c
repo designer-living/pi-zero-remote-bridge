@@ -8,10 +8,36 @@
 #include <errno.h>
 #include <dirent.h>
 #include <stdint.h>
+#ifdef __linux__
 #include <linux/input.h>
 #include <sys/inotify.h>
+#else
+struct input_event {
+    struct timeval time;
+    uint16_t type;
+    uint16_t code;
+    int32_t value;
+};
+#define EV_KEY 0x01
+#define IN_NONBLOCK 0x00000800
+#define IN_CREATE 0x00000100
+#define IN_ATTRIB 0x00000004
+#define IN_DELETE 0x00000200
+#define IN_MOVED_TO 0x00000080
+struct inotify_event {
+    int wd;
+    uint32_t mask;
+    uint32_t cookie;
+    uint32_t len;
+    char name[];
+};
+static int inotify_init1(int flags) { (void)flags; return -1; }
+static int inotify_add_watch(int fd, const char *pathname, uint32_t mask) { (void)fd; (void)pathname; (void)mask; return -1; }
+#define EVIOCGNAME(len) 0
+#endif
 #include <arpa/inet.h>
 #include <sys/socket.h>
+#include <sys/ioctl.h>
 #include <poll.h>
 #include <time.h>
 #include <stdarg.h>
@@ -49,53 +75,6 @@ enum {
 
 static int log_level = LEVEL_INFO;
 
-#define MAX_MAPPINGS 32
-
-typedef struct {
-    char name[MAX_NAME];
-    struct sockaddr_in server_addr;
-    int evfd;
-    int repeat_delay_ms;
-    uint64_t last_repeat_send_ms;
-} Mapping;
-
-static Mapping mappings[MAX_MAPPINGS];
-static int num_mappings = 0;
-
-static int add_mapping(const char *name, const char *ip, int port, int delay) {
-    if (num_mappings >= MAX_MAPPINGS) {
-        LOG_ERROR("Maximum number of mappings (%d) reached\n", MAX_MAPPINGS);
-        return -1;
-    }
-    Mapping *m = &mappings[num_mappings++];
-    strncpy(m->name, name, MAX_NAME - 1);
-    m->name[MAX_NAME - 1] = '\0';
-    m->evfd = -1;
-    m->repeat_delay_ms = delay;
-    m->last_repeat_send_ms = 0;
-
-    memset(&m->server_addr, 0, sizeof(m->server_addr));
-    m->server_addr.sin_family = AF_INET;
-    m->server_addr.sin_port   = htons(port);
-    if (!inet_aton(ip, &m->server_addr.sin_addr)) {
-        LOG_ERROR("Invalid IP address: %s\n", ip);
-        num_mappings--;
-        return -1;
-    }
-    return 0;
-}
-
-static const char* level_to_str(int level) {
-    switch (level) {
-        case LEVEL_ALWAYS: return "ALWAYS";
-        case LEVEL_ERROR:  return "ERROR";
-        case LEVEL_INFO:   return "INFO";
-        case LEVEL_DEBUG:  return "DEBUG";
-        case LEVEL_TRACE:  return "TRACE";
-        default:           return "UNKNOWN";
-    }
-}
-
 /* -------- Logging helper with UTC timestamp -------- */
 static void log_print(int level, const char *level_name, const char *fmt, ...) {
     if (level != LEVEL_ALWAYS && level > log_level) return;
@@ -125,6 +104,55 @@ static void log_print(int level, const char *level_name, const char *fmt, ...) {
 #define LOG_INFO(fmt, ...)  log_print(LEVEL_INFO,  "INFO",  fmt, ##__VA_ARGS__)
 #define LOG_DEBUG(fmt, ...) log_print(LEVEL_DEBUG, "DEBUG", fmt, ##__VA_ARGS__)
 #define LOG_TRACE(fmt, ...) log_print(LEVEL_TRACE, "TRACE", fmt, ##__VA_ARGS__)
+
+static const char* level_to_str(int level) {
+    switch (level) {
+        case LEVEL_ALWAYS: return "ALWAYS";
+        case LEVEL_ERROR:  return "ERROR";
+        case LEVEL_INFO:   return "INFO";
+        case LEVEL_DEBUG:  return "DEBUG";
+        case LEVEL_TRACE:  return "TRACE";
+        default:           return "UNKNOWN";
+    }
+}
+
+#define MAX_MAPPINGS 32
+
+typedef struct {
+    char name[MAX_NAME];
+    char dev_path[256];
+    struct sockaddr_in server_addr;
+    int evfd;
+    int repeat_delay_ms;
+    uint64_t last_repeat_send_ms;
+} Mapping;
+
+static Mapping mappings[MAX_MAPPINGS];
+static int num_mappings = 0;
+
+static int add_mapping(const char *name, const char *ip, int port, int delay) {
+    if (num_mappings >= MAX_MAPPINGS) {
+        LOG_ERROR("Maximum number of mappings (%d) reached\n", MAX_MAPPINGS);
+        return -1;
+    }
+    Mapping *m = &mappings[num_mappings++];
+    strncpy(m->name, name, MAX_NAME - 1);
+    m->name[MAX_NAME - 1] = '\0';
+    m->dev_path[0] = '\0';
+    m->evfd = -1;
+    m->repeat_delay_ms = delay;
+    m->last_repeat_send_ms = 0;
+
+    memset(&m->server_addr, 0, sizeof(m->server_addr));
+    m->server_addr.sin_family = AF_INET;
+    m->server_addr.sin_port   = htons(port);
+    if (!inet_aton(ip, &m->server_addr.sin_addr)) {
+        LOG_ERROR("Invalid IP address: %s\n", ip);
+        num_mappings--;
+        return -1;
+    }
+    return 0;
+}
 
 static int find_available_mapping(int fd, const char *path) {
     char name[MAX_NAME] = {0};
@@ -187,7 +215,7 @@ static int load_config(const char *filename) {
         } else if (strcasecmp(key, "REMOTE") == 0) {
             char name[MAX_NAME], ip[64];
             int port, delay = 0;
-            int n = sscanf(val, "%[^,],%[^,],%d,%d", name, ip, &port, &delay);
+            int n = sscanf(val, "%255[^,],%63[^,],%d,%d", name, ip, &port, &delay);
             if (n >= 3) {
                 add_mapping(name, ip, port, delay);
             } else {
@@ -279,6 +307,8 @@ int main(int argc, char *argv[]) {
                 int m_idx = find_available_mapping(fd, path);
                 if (m_idx >= 0) {
                     mappings[m_idx].evfd = fd;
+                    strncpy(mappings[m_idx].dev_path, path, sizeof(mappings[m_idx].dev_path) - 1);
+                    mappings[m_idx].dev_path[sizeof(mappings[m_idx].dev_path) - 1] = '\0';
                 } else {
                     close(fd);
                 }
@@ -334,6 +364,7 @@ int main(int argc, char *argv[]) {
                 LOG_INFO("Remote \"%s\" disconnected (POLLHUP/POLLERR)\n", mappings[m_idx].name);
                 close(mappings[m_idx].evfd);
                 mappings[m_idx].evfd = -1;
+                mappings[m_idx].dev_path[0] = '\0';
             } else if (revents & POLLIN) {
                 while (1) {
                     ssize_t n = read(mappings[m_idx].evfd, &ev, sizeof(ev));
@@ -343,6 +374,7 @@ int main(int argc, char *argv[]) {
                             LOG_INFO("Remote \"%s\" disconnected (ENODEV)\n", mappings[m_idx].name);
                             close(mappings[m_idx].evfd);
                             mappings[m_idx].evfd = -1;
+                            mappings[m_idx].dev_path[0] = '\0';
                             break;
                         }
                         perror("read evdev");
@@ -402,20 +434,11 @@ int main(int argc, char *argv[]) {
 
                         if ((ie->mask & IN_DELETE)) {
                             for (int i = 0; i < num_mappings; i++) {
-                                if (mappings[i].evfd >= 0) {
-                                    char evfd_path[256];
-                                    char evfd_proc_path[64];
-                                    snprintf(evfd_proc_path, sizeof(evfd_proc_path), "/proc/self/fd/%d", mappings[i].evfd);
-                                    ssize_t path_len = readlink(evfd_proc_path, evfd_path, sizeof(evfd_path) - 1);
-
-                                    if (path_len != -1) {
-                                        evfd_path[path_len] = '\0';
-                                        if (strcmp(path, evfd_path) == 0) {
-                                            LOG_INFO("Remote \"%s\" disconnected (inotify)\n", mappings[i].name);
-                                            close(mappings[i].evfd);
-                                            mappings[i].evfd = -1;
-                                        }
-                                    }
+                                if (mappings[i].evfd >= 0 && strcmp(path, mappings[i].dev_path) == 0) {
+                                    LOG_INFO("Remote \"%s\" disconnected (inotify: %s)\n", mappings[i].name, path);
+                                    close(mappings[i].evfd);
+                                    mappings[i].evfd = -1;
+                                    mappings[i].dev_path[0] = '\0';
                                 }
                             }
                         }
@@ -426,6 +449,8 @@ int main(int argc, char *argv[]) {
                                 int m_idx = find_available_mapping(fd, path);
                                 if (m_idx >= 0) {
                                     mappings[m_idx].evfd = fd;
+                                    strncpy(mappings[m_idx].dev_path, path, sizeof(mappings[m_idx].dev_path) - 1);
+                                    mappings[m_idx].dev_path[sizeof(mappings[m_idx].dev_path) - 1] = '\0';
                                 } else {
                                     close(fd);
                                 }
