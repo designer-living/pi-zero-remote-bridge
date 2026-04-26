@@ -165,9 +165,14 @@ static int find_available_mapping(int fd, const char *path) {
     LOG_DEBUG("Checking device %s: name=\"%s\"\n", path, name);
 
     for (int i = 0; i < num_mappings; i++) {
-        if (mappings[i].evfd < 0 && strcmp(mappings[i].name, name) == 0) {
-            LOG_INFO("Matched device: %s at %s for mapping %d\n", name, path, i);
-            return i;
+        if (mappings[i].evfd < 0) {
+            if (strcmp(mappings[i].name, name) == 0) {
+                LOG_INFO("Matched device: %s at %s for mapping %d\n", name, path, i);
+                return i;
+            } else {
+                LOG_TRACE("Mapping %d name (\"%s\") does not match device name (\"%s\")\n", 
+                    i, mappings[i].name, name);
+            }
         }
     }
 
@@ -200,7 +205,17 @@ static int load_config(const char *filename) {
         char *key = p;
         char *val = eq + 1;
 
-        // Trim quotes from val
+        // Trim trailing spaces from key
+        char *key_end = key + strlen(key) - 1;
+        while (key_end > key && (*key_end == ' ' || *key_end == '\t')) {
+            *key_end = '\0';
+            key_end--;
+        }
+
+        // Trim leading spaces from val
+        while (*val == ' ' || *val == '\t') val++;
+
+        // Trim quotes from val if present
         if (*val == '"') {
             val++;
             char *last_quote = strrchr(val, '"');
@@ -215,9 +230,26 @@ static int load_config(const char *filename) {
         } else if (strcasecmp(key, "REMOTE") == 0) {
             char name[MAX_NAME], ip[64];
             int port, delay = 0;
-            int n = sscanf(val, "%255[^,],%63[^,],%d,%d", name, ip, &port, &delay);
+            // Skip leading spaces in the sscanf fields
+            int n = sscanf(val, " %255[^,], %63[^,], %d, %d", name, ip, &port, &delay);
             if (n >= 3) {
-                add_mapping(name, ip, port, delay);
+                // Trim trailing spaces from name
+                size_t n_len = strlen(name);
+                while (n_len > 0 && (name[n_len - 1] == ' ' || name[n_len - 1] == '\t')) {
+                    name[n_len - 1] = '\0';
+                    n_len--;
+                }
+                // Trim trailing spaces from ip
+                size_t i_len = strlen(ip);
+                while (i_len > 0 && (ip[i_len - 1] == ' ' || ip[i_len - 1] == '\t')) {
+                    ip[i_len - 1] = '\0';
+                    i_len--;
+                }
+
+                if (add_mapping(name, ip, port, delay) == 0) {
+                    LOG_DEBUG("Loaded mapping: Remote=\"%s\", Server=%s:%d, Delay=%dms\n",
+                        name, ip, port, delay);
+                }
             } else {
                 LOG_ERROR("Invalid REMOTE line: %s=%s\n", key, val);
             }
@@ -368,9 +400,9 @@ int main(int argc, char *argv[]) {
             } else if (revents & POLLIN) {
                 while (1) {
                     ssize_t n = read(mappings[m_idx].evfd, &ev, sizeof(ev));
-                    if (n < 0) {
+                    if (n <= 0) {
                         if (errno == EAGAIN || errno == EINTR) break;
-                        if (errno == ENODEV) {
+                        if (errno == ENODEV || n == 0) {
                             LOG_INFO("Remote \"%s\" disconnected (ENODEV)\n", mappings[m_idx].name);
                             close(mappings[m_idx].evfd);
                             mappings[m_idx].evfd = -1;
@@ -382,6 +414,7 @@ int main(int argc, char *argv[]) {
                     }
 
                     if (n != sizeof(ev)) {
+                        LOG_DEBUG("Short read from evdev: expected %zu, got %zd\n", sizeof(ev), n);
                         break;
                     }
 
