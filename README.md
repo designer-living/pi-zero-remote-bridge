@@ -49,6 +49,29 @@ tail -f /var/log/remote-bridge.log
 
 ---
 
+## Pairing a Bluetooth Remote
+
+Use the included `pair-remote.sh` script to scan for, pair, and identify your remote's
+evdev name in one step.
+
+```bash
+chmod +x pair-remote.sh
+sudo ./pair-remote.sh
+```
+
+The script will:
+1. Scan for Bluetooth devices (put your remote in pairing mode first)
+2. Let you pick the device from a numbered list
+3. Pair, trust, and connect to it
+4. Detect the evdev name that appears in `/dev/input`
+5. Optionally update `/etc/remote-bridge.conf` and restart the service
+
+Requires BlueZ:
+- Debian / Raspberry Pi OS: `sudo apt-get install bluetooth`
+- Alpine: `sudo apk add bluez bluez-openrc`
+
+---
+
 ## Building from Source
 
 ### 1. Build the Application
