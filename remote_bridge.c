@@ -419,12 +419,15 @@ int main(int argc, char *argv[]) {
                     }
 
                     if (n != sizeof(ev)) {
-                        LOG_DEBUG("Short read from evdev: expected %zu, got %zd\n", sizeof(ev), n);
+                        LOG_ERROR("Short read from evdev: expected %zu, got %zd. Closing device.\n", sizeof(ev), n);
+                        close(mappings[m_idx].evfd);
+                        mappings[m_idx].evfd = -1;
+                        mappings[m_idx].dev_path[0] = '\0';
                         break;
                     }
 
                     if (ev.type == EV_KEY) {
-                        LOG_DEBUG("Key Event (%s): code=%d, value=%d\n", mappings[m_idx].name, ev.code, ev.value);
+                        LOG_TRACE("Key Event (%s): code=%d, value=%d\n", mappings[m_idx].name, ev.code, ev.value);
 
                         /* Throttle repeat events (value=2) if repeat_delay_ms is set */
                         if (ev.value == 2 && mappings[m_idx].repeat_delay_ms > 0) {
@@ -449,7 +452,7 @@ int main(int argc, char *argv[]) {
                         if (sent < 0) {
                             LOG_ERROR("Failed to send UDP packet: %s\n", strerror(errno));
                         } else {
-                            LOG_DEBUG("Sent UDP packet for key %d, value %d to %s:%d\n", 
+                            LOG_TRACE("Sent UDP packet for key %d, value %d to %s:%d\n",
                                 ev.code, ev.value,
                                 inet_ntoa(mappings[m_idx].server_addr.sin_addr),
                                 ntohs(mappings[m_idx].server_addr.sin_port));
