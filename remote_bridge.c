@@ -211,8 +211,12 @@ static int load_config(const char *filename) {
             key[--klen] = '\0';
         }
 
-        // Trim leading spaces from val
+        // Trim leading and trailing spaces from val
         while (*val == ' ' || *val == '\t') val++;
+        size_t vlen = strlen(val);
+        while (vlen > 0 && (val[vlen - 1] == ' ' || val[vlen - 1] == '\t')) {
+            val[--vlen] = '\0';
+        }
 
         // Trim quotes from val if present
         if (*val == '"') {
@@ -229,8 +233,8 @@ static int load_config(const char *filename) {
         } else if (strcasecmp(key, "REMOTE") == 0) {
             char name[MAX_NAME], ip[64];
             int port, delay = 0;
-            // Skip leading spaces in the sscanf fields
-            int n = sscanf(val, " %255[^,], %63[^,], %d, %d", name, ip, &port, &delay);
+            // Skip leading/trailing spaces in the sscanf fields
+            int n = sscanf(val, " %255[^,] , %63[^,] , %d , %d", name, ip, &port, &delay);
             if (n >= 3) {
                 // Trim trailing spaces from name
                 size_t n_len = strlen(name);
