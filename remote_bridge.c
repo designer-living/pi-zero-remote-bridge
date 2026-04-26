@@ -206,10 +206,9 @@ static int load_config(const char *filename) {
         char *val = eq + 1;
 
         // Trim trailing spaces from key
-        char *key_end = key + strlen(key) - 1;
-        while (key_end > key && (*key_end == ' ' || *key_end == '\t')) {
-            *key_end = '\0';
-            key_end--;
+        size_t klen = strlen(key);
+        while (klen > 0 && (key[klen - 1] == ' ' || key[klen - 1] == '\t')) {
+            key[--klen] = '\0';
         }
 
         // Trim leading spaces from val
@@ -400,10 +399,12 @@ int main(int argc, char *argv[]) {
             } else if (revents & POLLIN) {
                 while (1) {
                     ssize_t n = read(mappings[m_idx].evfd, &ev, sizeof(ev));
+                    if (n < 0 && (errno == EAGAIN || errno == EINTR)) break;
+
                     if (n <= 0) {
-                        if (errno == EAGAIN || errno == EINTR) break;
-                        if (errno == ENODEV || n == 0) {
-                            LOG_INFO("Remote \"%s\" disconnected (ENODEV)\n", mappings[m_idx].name);
+                        if (n == 0 || errno == ENODEV) {
+                            LOG_INFO("Remote \"%s\" disconnected (%s)\n", 
+                                     mappings[m_idx].name, n == 0 ? "EOF" : "ENODEV");
                             close(mappings[m_idx].evfd);
                             mappings[m_idx].evfd = -1;
                             mappings[m_idx].dev_path[0] = '\0';
@@ -419,7 +420,7 @@ int main(int argc, char *argv[]) {
                     }
 
                     if (ev.type == EV_KEY) {
-                        LOG_TRACE("Key Event (%s): code=%d, value=%d\n", mappings[m_idx].name, ev.code, ev.value);
+                        LOG_DEBUG("Key Event (%s): code=%d, value=%d\n", mappings[m_idx].name, ev.code, ev.value);
 
                         /* Throttle repeat events (value=2) if repeat_delay_ms is set */
                         if (ev.value == 2 && mappings[m_idx].repeat_delay_ms > 0) {
@@ -444,7 +445,10 @@ int main(int argc, char *argv[]) {
                         if (sent < 0) {
                             LOG_ERROR("Failed to send UDP packet: %s\n", strerror(errno));
                         } else {
-                            LOG_TRACE("Sent UDP packet for key %d, value %d\n", ev.code, ev.value);
+                            LOG_DEBUG("Sent UDP packet for key %d, value %d to %s:%d\n", 
+                                ev.code, ev.value,
+                                inet_ntoa(mappings[m_idx].server_addr.sin_addr),
+                                ntohs(mappings[m_idx].server_addr.sin_port));
                         }
                     }
                 }
