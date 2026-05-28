@@ -49,12 +49,16 @@ static int inotify_add_watch(int fd, const char *pathname, uint32_t mask) { (voi
 #define INPUT_DIR "/dev/input"
 #define MAX_NAME 256
 
+#define PACKET_FORMAT_VERSION    1
+#define PKT_MAKE_HEADER(ver)     ((uint8_t)(((ver) & 0x0F) << 4))
+#define PKT_HEADER_VERSION(h)    (((h) >> 4) & 0x0F)
+
 /* -------- Binary packet -------- */
 struct Packet {
-    uint32_t timestamp_ms;  // network byte order
-    uint16_t key_code;      // network byte order
-    int8_t   value;         // 0=up, 1=down, 2=repeat
-    uint8_t  reserved;
+    uint8_t  header;        /* upper 4 bits = format version (0-15), lower 4 bits reserved */
+    uint32_t timestamp_ms;  /* network byte order */
+    uint16_t key_code;      /* network byte order */
+    int8_t   value;         /* 0=up, 1=down, 2=repeat */
 } __attribute__((packed));
 
 /* -------- Time helper -------- */
@@ -439,11 +443,10 @@ int main(int argc, char *argv[]) {
                             mappings[m_idx].last_repeat_send_ms = now;
                         }
 
-                        pkt.timestamp_ms =
-                            htonl((uint32_t)(now_ms() & 0xFFFFFFFF));
-                        pkt.key_code = htons((uint16_t)ev.code);
-                        pkt.value    = (int8_t)ev.value;
-                        pkt.reserved = 0;
+                        pkt.header       = PKT_MAKE_HEADER(PACKET_FORMAT_VERSION);
+                        pkt.timestamp_ms = htonl((uint32_t)(now_ms() & 0xFFFFFFFF));
+                        pkt.key_code     = htons((uint16_t)ev.code);
+                        pkt.value        = (int8_t)ev.value;
 
                         ssize_t sent = sendto(sock,
                                               &pkt, sizeof(pkt), 0,
