@@ -109,6 +109,17 @@ static void log_print(int level, const char *level_name, const char *fmt, ...) {
 #define LOG_DEBUG(fmt, ...) log_print(LEVEL_DEBUG, "DEBUG", fmt, ##__VA_ARGS__)
 #define LOG_TRACE(fmt, ...) log_print(LEVEL_TRACE, "TRACE", fmt, ##__VA_ARGS__)
 
+/* Format len bytes at buf as "XX XX XX ..." into out (must be >= len*3+1 bytes) */
+static void hex_bytes(const void *buf, size_t len, char *out) {
+    const uint8_t *b = (const uint8_t *)buf;
+    for (size_t i = 0; i < len; i++) {
+        int off = (int)(i * 3);
+        snprintf(out + off, 4, "%02X ", b[i]);
+    }
+    if (len > 0) out[len * 3 - 1] = '\0';
+    else out[0] = '\0';
+}
+
 static const char* level_to_str(int level) {
     switch (level) {
         case LEVEL_ALWAYS: return "ALWAYS";
@@ -448,6 +459,12 @@ int main(int argc, char *argv[]) {
                         pkt.key_code     = htons((uint16_t)ev.code);
                         pkt.value        = (int8_t)ev.value;
 
+                        if (log_level >= LEVEL_TRACE) {
+                            char hex[sizeof(pkt) * 3 + 1];
+                            hex_bytes(&pkt, sizeof(pkt), hex);
+                            LOG_TRACE("Sending packet (%zu bytes): buf=[%s]\n",
+                                sizeof(pkt), hex);
+                        }
                         ssize_t sent = sendto(sock,
                                               &pkt, sizeof(pkt), 0,
                                               (struct sockaddr *)&mappings[m_idx].server_addr,
