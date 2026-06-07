@@ -112,12 +112,18 @@ static void log_print(int level, const char *level_name, const char *fmt, ...) {
 /* Format len bytes at buf as "XX XX XX ..." into out (must be >= len*3+1 bytes) */
 static void hex_bytes(const void *buf, size_t len, char *out) {
     const uint8_t *b = (const uint8_t *)buf;
+    static const char hex_chars[] = "0123456789ABCDEF";
     for (size_t i = 0; i < len; i++) {
-        int off = (int)(i * 3);
-        snprintf(out + off, 4, "%02X ", b[i]);
+        size_t off = i * 3;
+        out[off]     = hex_chars[(b[i] >> 4) & 0x0F];
+        out[off + 1] = hex_chars[b[i] & 0x0F];
+        out[off + 2] = ' ';
     }
-    if (len > 0) out[len * 3 - 1] = '\0';
-    else out[0] = '\0';
+    if (len > 0) {
+        out[len * 3 - 1] = '\0';
+    } else {
+        out[0] = '\0';
+    }
 }
 
 static const char* level_to_str(int level) {
