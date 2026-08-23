@@ -19,6 +19,8 @@ struct input_event {
     int32_t value;
 };
 #define EV_KEY 0x01
+#define EV_MSC 0x04
+#define MSC_SCAN 0x04
 #define IN_NONBLOCK 0x00000800
 #define IN_CREATE 0x00000100
 #define IN_ATTRIB 0x00000004
@@ -49,7 +51,7 @@ static int inotify_add_watch(int fd, const char *pathname, uint32_t mask) { (voi
 #define INPUT_DIR "/dev/input"
 #define MAX_NAME 256
 
-#define PACKET_FORMAT_VERSION    1
+#define PACKET_FORMAT_VERSION    2
 #define PKT_MAKE_HEADER(ver)     ((uint8_t)(((ver) & 0x0F) << 4))
 #define PKT_HEADER_VERSION(h)    (((h) >> 4) & 0x0F)
 
@@ -58,6 +60,7 @@ struct Packet {
     uint8_t  header;        /* upper 4 bits = format version (0-15), lower 4 bits reserved */
     uint32_t timestamp_ms;  /* network byte order */
     uint16_t key_code;      /* network byte order */
+    uint32_t scan_code;     /* network byte order; raw MSC_SCAN value preceding this key, 0 if none */
     int8_t   value;         /* 0=up, 1=down, 2=repeat */
 } __attribute__((packed));
 
@@ -147,6 +150,7 @@ typedef struct {
     int evfd;
     int repeat_delay_ms;
     uint64_t last_repeat_send_ms;
+    uint32_t pending_scan_code;
 } Mapping;
 
 static Mapping mappings[MAX_MAPPINGS];
@@ -164,6 +168,7 @@ static int add_mapping(const char *name, const char *ip, int port, int delay) {
     m->evfd = -1;
     m->repeat_delay_ms = delay;
     m->last_repeat_send_ms = 0;
+    m->pending_scan_code = 0;
 
     memset(&m->server_addr, 0, sizeof(m->server_addr));
     m->server_addr.sin_family = AF_INET;
@@ -448,7 +453,10 @@ int main(int argc, char *argv[]) {
                         break;
                     }
 
-                    if (ev.type == EV_KEY) {
+                    if (ev.type == EV_MSC && ev.code == MSC_SCAN) {
+                        mappings[m_idx].pending_scan_code = (uint32_t)ev.value;
+                        LOG_TRACE("Scan Event (%s): scan_code=0x%x\n", mappings[m_idx].name, (unsigned)mappings[m_idx].pending_scan_code);
+                    } else if (ev.type == EV_KEY) {
                         LOG_TRACE("Key Event (%s): code=%d, value=%d\n", mappings[m_idx].name, ev.code, ev.value);
 
                         /* Throttle repeat events (value=2) if repeat_delay_ms is set */
@@ -464,7 +472,11 @@ int main(int argc, char *argv[]) {
                         pkt.header       = PKT_MAKE_HEADER(PACKET_FORMAT_VERSION);
                         pkt.timestamp_ms = htonl((uint32_t)(now_ms() & 0xFFFFFFFF));
                         pkt.key_code     = htons((uint16_t)ev.code);
+                        pkt.scan_code    = htonl(mappings[m_idx].pending_scan_code);
                         pkt.value        = (int8_t)ev.value;
+
+                        /* Scan code only describes the event it immediately preceded */
+                        mappings[m_idx].pending_scan_code = 0;
 
                         if (log_level >= LEVEL_TRACE) {
                             char hex[sizeof(pkt) * 3 + 1];

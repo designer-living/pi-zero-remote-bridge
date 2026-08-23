@@ -7,7 +7,7 @@ Guidance for AI coding agents (and humans) working in this repository.
 `remote_bridge` is a small single-file C daemon that runs on a Raspberry Pi
 Zero (or any Linux box) with an IR/Bluetooth remote receiver attached. It
 reads `EV_KEY` events from `/dev/input/event*`, matches devices by exact
-name, and forwards each key event as a compact 8-byte binary UDP packet to
+name, and forwards each key event as a compact 12-byte binary UDP packet to
 a configured server. It handles hotplug (USB/BT dongles connecting and
 disconnecting) via `inotify` and can service multiple remotes at once, each
 mapped to its own destination IP/port.
@@ -83,16 +83,25 @@ libc). The flow:
    handled the same way so a remote can drop and reconnect without a
    restart.
 4. **Event loop**: a single `poll()` over all currently-open mapping fds
-   plus the inotify fd. For each `EV_KEY` event, optionally throttles
+   plus the inotify fd. Each mapping tracks the most recent `EV_MSC`/
+   `MSC_SCAN` value it has seen (`pending_scan_code`) — devices that can't
+   express a button as a standard evdev keycode (e.g. some Bluetooth remotes
+   report `KEY_UNKNOWN` for several distinct buttons) still emit a unique
+   raw scan code just before the `EV_KEY` event, so this lets those buttons
+   be told apart downstream. For each `EV_KEY` event, optionally throttles
    `value == 2` (repeat) events per-mapping using `repeat_delay_ms`, then
-   builds a `struct Packet` and `sendto()`s it to that mapping's server.
-5. **Wire format** — `struct Packet` (packed, 8 bytes):
+   builds a `struct Packet` (consuming and clearing `pending_scan_code`) and
+   `sendto()`s it to that mapping's server.
+5. **Wire format** — `struct Packet` (packed, 12 bytes):
    - `header` (1 byte): upper 4 bits = `PACKET_FORMAT_VERSION`, lower 4
      bits reserved. Bump the version and update both sides if you change
      the layout below.
    - `timestamp_ms` (4 bytes, network order): low 32 bits of a monotonic
      ms clock.
    - `key_code` (2 bytes, network order): the evdev key code.
+   - `scan_code` (4 bytes, network order): the raw `MSC_SCAN` value that
+     preceded this key event, or `0` if none was seen. Lets the gateway
+     disambiguate devices/buttons that share `KEY_UNKNOWN` (240).
    - `value` (1 byte): `0` = up, `1` = down, `2` = repeat.
 6. **Logging**: `log_print` / `LOG_ERROR|INFO|DEBUG|TRACE` macros print UTC
    timestamps to stdout (captured by journald/OpenRC, not written to a file
