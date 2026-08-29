@@ -127,3 +127,29 @@ layers.
 - Config file format and operational runbook (service management, logs,
   troubleshooting) are documented in `README.md` — keep both in sync if you
   change config keys or CLI args.
+
+## Reaching the live bridges
+
+The deployed bridges run on `remote-bridge-*` boxes (Alpine, aarch64, user
+`root`) on the `192.168.5.0/24` subnet, behind jumpbox `neil@192.168.10.10`.
+That jumpbox **refuses TCP forwarding**, so `ssh -J neil@192.168.10.10
+root@192.168.5.3` fails with `administratively prohibited`. Use nested ssh:
+
+```bash
+ssh neil@192.168.10.10 "ssh root@192.168.5.3 '<command>'"
+```
+
+Hosts (jumpbox `~/.ssh/config`): `.2` amp, `.3` bedroom
+(`remote-bridge-bedroom`, feeds gateway UDP :9001), `.21` / `.113` / `.185`
+dev units.
+
+## GitHub CLI gotcha
+
+`gh pr edit` / `gh pr view` with rich fields fail on the `designer-living`
+repos with `GraphQL: Projects (classic) is being deprecated …` (exit 1).
+Edit PRs via REST instead — `gh pr create` itself is fine:
+
+```bash
+gh api -X PATCH repos/designer-living/pi-zero-remote-bridge/pulls/<n> \
+  -f title="…" -F body=@/tmp/body.md
+```
