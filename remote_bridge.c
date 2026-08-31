@@ -458,7 +458,7 @@ int main(int argc, char *argv[]) {
                         LOG_TRACE("Scan Event (%s): scan_code=0x%x\n", mappings[m_idx].name, (unsigned)mappings[m_idx].pending_scan_code);
                     } else if (ev.type == EV_KEY) {
                         LOG_TRACE("Key Event (%s): code=%d, value=%d\n", mappings[m_idx].name, ev.code, ev.value);
-                    
+
                         /* Throttle repeat events (value=2) if repeat_delay_ms is set */
                         if (ev.value == 2 && mappings[m_idx].repeat_delay_ms > 0) {
                             uint64_t now = now_ms();
