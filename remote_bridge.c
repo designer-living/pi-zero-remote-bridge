@@ -457,8 +457,10 @@ int main(int argc, char *argv[]) {
                         mappings[m_idx].pending_scan_code = (uint32_t)ev.value;
                         LOG_TRACE("Scan Event (%s): scan_code=0x%x\n", mappings[m_idx].name, (unsigned)mappings[m_idx].pending_scan_code);
                     } else if (ev.type == EV_KEY) {
-                        LOG_TRACE("Key Event (%s): code=%d, value=%d\n", mappings[m_idx].name, ev.code, ev.value);
 
+                    } else if (ev.type == EV_KEY) {
+                        LOG_TRACE("Key Event (%s): code=%d, value=%d\n", mappings[m_idx].name, ev.code, ev.value);
+                    
                         /* Throttle repeat events (value=2) if repeat_delay_ms is set */
                         if (ev.value == 2 && mappings[m_idx].repeat_delay_ms > 0) {
                             uint64_t now = now_ms();
@@ -468,15 +470,17 @@ int main(int argc, char *argv[]) {
                             }
                             mappings[m_idx].last_repeat_send_ms = now;
                         }
-
+                    
                         pkt.header       = PKT_MAKE_HEADER(PACKET_FORMAT_VERSION);
                         pkt.timestamp_ms = htonl((uint32_t)(now_ms() & 0xFFFFFFFF));
                         pkt.key_code     = htons((uint16_t)ev.code);
                         pkt.scan_code    = htonl(mappings[m_idx].pending_scan_code);
                         pkt.value        = (int8_t)ev.value;
-
-                        /* Scan code only describes the event it immediately preceded */
-                        mappings[m_idx].pending_scan_code = 0;
+                    
+                        /* Only clear the scan code when key is released (value == 0) */
+                        if (ev.value == 0) {
+                            mappings[m_idx].pending_scan_code = 0;
+                        }
 
                         if (log_level >= LEVEL_TRACE) {
                             char hex[sizeof(pkt) * 3 + 1];
