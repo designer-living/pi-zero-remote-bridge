@@ -457,8 +457,6 @@ int main(int argc, char *argv[]) {
                         mappings[m_idx].pending_scan_code = (uint32_t)ev.value;
                         LOG_TRACE("Scan Event (%s): scan_code=0x%x\n", mappings[m_idx].name, (unsigned)mappings[m_idx].pending_scan_code);
                     } else if (ev.type == EV_KEY) {
-
-                    } else if (ev.type == EV_KEY) {
                         LOG_TRACE("Key Event (%s): code=%d, value=%d\n", mappings[m_idx].name, ev.code, ev.value);
                     
                         /* Throttle repeat events (value=2) if repeat_delay_ms is set */
@@ -470,7 +468,7 @@ int main(int argc, char *argv[]) {
                             }
                             mappings[m_idx].last_repeat_send_ms = now;
                         }
-                    
+
                         pkt.header       = PKT_MAKE_HEADER(PACKET_FORMAT_VERSION);
                         pkt.timestamp_ms = htonl((uint32_t)(now_ms() & 0xFFFFFFFF));
                         pkt.key_code     = htons((uint16_t)ev.code);
