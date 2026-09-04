@@ -118,10 +118,21 @@ jobs:
 
             KEY_PATH=\"\$(pwd)/remote-bridge.rsa\"
 
-            # 4. Index and sign each architecture directory
+            # 4. Convert nFPM files (remote-bridge_1.3.7_armhf.apk) to Alpine standard (remote-bridge-1.3.7.apk)
             for ARCH in armhf aarch64 x86_64; do
               if [ -d \"\$ARCH\" ] && [ \$(ls -A \"\$ARCH\") ]; then
                 cd \"\$ARCH\"
+                
+                for FILE in *.apk; do
+                  if [ -f \"\$FILE\" ] && [ \"\$FILE\" != \"APKINDEX.tar.gz\" ]; then
+                    # Replace remote-bridge_<ver>_<arch>.apk with remote-bridge-<ver>.apk
+                    NEW_NAME=\$(echo \"\$FILE\" | sed -E 's/_([0-9]+[^_]*).*/-\1.apk/')
+                    if [ \"\$FILE\" != \"\$NEW_NAME\" ]; then
+                      mv \"\$FILE\" \"\$NEW_NAME\"
+                    fi
+                  fi
+                done
+
                 apk index --allow-untrusted -o APKINDEX.tar.gz *.apk
                 abuild-sign -k \"\$KEY_PATH\" APKINDEX.tar.gz
                 cd ..
@@ -132,6 +143,7 @@ jobs:
             touch .nojekyll
             rm -rf packages remote-bridge.rsa
           "
+
 
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v3
