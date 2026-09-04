@@ -111,17 +111,20 @@ jobs:
             # 2. Create architecture folders
             mkdir -p armhf aarch64 x86_64
 
-            # 3. Move packages
-            mv packages/*armhf.apk armhf/ 2>/dev/null || true
-            mv packages/*aarch64.apk aarch64/ 2>/dev/null || true
-            mv packages/*x86_64.apk x86_64/ 2>/dev/null || true
+            # 3. Move packages into arch folders
+            mv packages/*armhf*.apk armhf/ 2>/dev/null || true
+            mv packages/*aarch64*.apk aarch64/ 2>/dev/null || true
+            mv packages/*x86_64*.apk x86_64/ 2>/dev/null || true
 
-            # 4. Index and sign each directory using absolute path to the key
             KEY_PATH=\"\$(pwd)/remote-bridge.rsa\"
+
+            # 4. Index and sign each architecture directory
             for ARCH in armhf aarch64 x86_64; do
               if [ -d \"\$ARCH\" ] && [ \$(ls -A \"\$ARCH\") ]; then
-                apk index --allow-untrusted -o \"\$ARCH/APKINDEX.tar.gz\" \"\$ARCH\"/*.apk
-                abuild-sign -k \"\$KEY_PATH\" \"\$ARCH/APKINDEX.tar.gz\"
+                cd \"\$ARCH\"
+                apk index --allow-untrusted -o APKINDEX.tar.gz *.apk
+                abuild-sign -k \"\$KEY_PATH\" APKINDEX.tar.gz
+                cd ..
               fi
             done
 
@@ -129,7 +132,6 @@ jobs:
             touch .nojekyll
             rm -rf packages remote-bridge.rsa
           "
-
 
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v3
