@@ -96,7 +96,7 @@ jobs:
           pattern: apk-packages-*
           merge-multiple: true
 
-      - name: Generate APKINDEX and prepare GH-Pages site
+      - name: Organize Architectures, Generate Indexes, and Prepare Site
         uses: docker://alpine:latest
         with:
           entrypoint: /bin/sh
@@ -106,9 +106,17 @@ jobs:
             echo '${{ secrets.APK_PRIVATE_KEY }}' > remote-bridge.rsa &&
             echo '${{ secrets.APK_PUBLIC_KEY }}' > remote-bridge.rsa.pub &&
             chmod 600 remote-bridge.rsa &&
-            apk index --allow-untrusted -o APKINDEX.tar.gz packages/*.apk &&
-            abuild-sign -k remote-bridge.rsa APKINDEX.tar.gz &&
-            mv packages/*.apk . &&
+            mkdir -p armhf aarch64 x86_64
+            mv packages/*armhf.apk armhf/ 2>/dev/null || true
+            mv packages/*aarch64.apk aarch64/ 2>/dev/null || true
+            mv packages/*x86_64.apk x86_64/ 2>/dev/null || true
+            for ARCH in armhf aarch64 x86_64; do
+              if [ -d \"\$ARCH\" ] && [ \$(ls -A \"\$ARCH\") ]; then
+                apk index --allow-untrusted -o \"\$ARCH/APKINDEX.tar.gz\" \"\$ARCH\"/*.apk
+                abuild-sign -k remote-bridge.rsa \"\$ARCH/APKINDEX.tar.gz\"
+              fi
+            done
+            touch .nojekyll
             rm -rf packages remote-bridge.rsa"
 
       - name: Deploy to GitHub Pages
@@ -116,4 +124,5 @@ jobs:
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: ./dist
+
 
