@@ -94,6 +94,8 @@ nano remote-bridge.conf
 **New format (supporting multiple remotes)**:
 ```conf
 LOG_LEVEL="INFO"
+# Send the KEY DOWN / KEY UP packet this many times. KEY HOLD is still only sent once.
+EDGE_REPEAT_COUNT=1
 
 # Format: REMOTE="<exact_remote_name>,<server_ip>,<server_port>"
 REMOTE="IR-receiver,192.168.1.100,9999"
