@@ -118,10 +118,21 @@ jobs:
 
             KEY_PATH=\"\$(pwd)/remote-bridge.rsa\"
 
-            # 4. Index and sign each architecture directory
+            # 4. Standardize filenames, index, and sign each architecture directory
             for ARCH in armhf aarch64 x86_64; do
               if [ -d \"\$ARCH\" ] && [ \$(ls -A \"\$ARCH\") ]; then
                 cd \"\$ARCH\"
+                
+                # Extract package metadata to rename files to match APK requirements
+                for FILE in *.apk; do
+                  if [ -f \"\$FILE\" ]; then
+                    PKG_NAME=\$(apk info --allow-untrusted -P \"\$FILE\")
+                    if [ -n \"\$PKG_NAME\" ]; then
+                      mv \"\$FILE\" \"\${PKG_NAME}.apk\"
+                    fi
+                  fi
+                done
+
                 apk index --allow-untrusted -o APKINDEX.tar.gz *.apk
                 abuild-sign -k \"\$KEY_PATH\" APKINDEX.tar.gz
                 cd ..
@@ -132,6 +143,7 @@ jobs:
             touch .nojekyll
             rm -rf packages remote-bridge.rsa
           "
+
 
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v3
