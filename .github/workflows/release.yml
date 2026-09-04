@@ -123,10 +123,10 @@ jobs:
               if [ -d \"\$ARCH\" ] && [ \$(ls -A \"\$ARCH\") ]; then
                 cd \"\$ARCH\"
                 
-                # Extract package metadata to rename files to match APK requirements
+                # Inspect local file header (-W) to get full package name and version
                 for FILE in *.apk; do
-                  if [ -f \"\$FILE\" ]; then
-                    PKG_NAME=\$(apk info --allow-untrusted -P \"\$FILE\")
+                  if [ -f \"\$FILE\" ] && [ \"\$FILE\" != \"APKINDEX.tar.gz\" ]; then
+                    PKG_NAME=\$(apk info --allow-untrusted -W \"\$FILE\" | head -n1 | awk '{print \$1}')
                     if [ -n \"\$PKG_NAME\" ]; then
                       mv \"\$FILE\" \"\${PKG_NAME}.apk\"
                     fi
@@ -143,6 +143,7 @@ jobs:
             touch .nojekyll
             rm -rf packages remote-bridge.rsa
           "
+
 
 
       - name: Deploy to GitHub Pages
