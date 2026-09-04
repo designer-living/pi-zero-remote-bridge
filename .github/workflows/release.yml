@@ -46,10 +46,12 @@ jobs:
             sh -c "apk add --no-cache make gcc musl-dev linux-headers && \
                    make VERSION=${{ steps.vars.outputs.VERSION }} CFLAGS='-static -O3 -Wall -Wextra'"
 
-      - name: Set up Signing Key for nFPM
+      - name: Set up Signing Keys for nFPM
         run: |
           echo "${{ secrets.APK_PRIVATE_KEY }}" > remote-bridge.rsa
+          echo "${{ secrets.APK_PUBLIC_KEY }}" > remote-bridge.rsa.pub
           chmod 600 remote-bridge.rsa
+
 
       - name: Build Debian package
         env:
