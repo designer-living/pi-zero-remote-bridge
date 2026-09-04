@@ -4,7 +4,6 @@ platform: linux
 version: ${VERSION}
 section: "default"
 priority: "optional"
-file_name_template: "{{ .Package }}-{{ .Version }}-{{ .Arch }}"
 maintainer: "foxy82 <foxy82.githubl@gmail.com>"
 description: |
   Remote to Network Bridge.
@@ -40,6 +39,7 @@ scripts:
   preremove: packaging/scripts/preremove-apk.sh
 
 apk:
+  file_name_template: "{{ .Package }}-{{ .Version }}"
   signature:
     # Key location on the build worker
     key_file: "remote-bridge.rsa"
