@@ -40,6 +40,26 @@ sudo journalctl -u remote-bridge -f
 
 ### Alpine Linux
 
+#### Using APK
+
+One time setup to add and trust the source:
+
+```bash
+sudo wget -O /etc/apk/keys/remote-bridge.rsa.pub https://designer-living.github.io/pi-zero-remote-bridge/remote-bridge.rsa.pub
+echo "https://designer-living.github.io/pi-zero-remote-bridge" | sudo tee -a /etc/apk/repositories
+```
+
+Then
+
+```bash
+sudo apk update
+sudo apk install remote-bridge
+# OR
+sudo apk upgrade remote-bridge
+```
+
+#### Manually
+
 ```bash
 # Download the package for your architecture (e.g. armhf for Pi Zero v1/v2)
 wget https://github.com/foxy82/pi-zero-remote-bridge/releases/latest/download/remote-bridge_<version>_armhf.apk
