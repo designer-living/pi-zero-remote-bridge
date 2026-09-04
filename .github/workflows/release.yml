@@ -68,3 +68,23 @@ jobs:
             *.deb
             *.apk
             remote_bridge-${{ steps.vars.outputs.VERSION }}-${{ matrix.arch }}
+            
+      - name: Set up Signing Key
+        run: |
+          echo "${{ secrets.APK_PRIVATE_KEY }}" > remote-bridge.rsa
+          chmod 600 remote-bridge.rsa
+      
+      - name: Sign APK Package
+        run: |
+          # Install abuild tools if not present
+          sudo apt-get install -y abuild || sudo apk add abuild
+          
+          # Sign the package using your private key
+          abuild-sign -k remote-bridge.rsa path/to/your-package.apk
+      
+      - name: Deploy to GitHub Pages (APK Repository)
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./dist # Directory containing your signed APK files and public key
+
