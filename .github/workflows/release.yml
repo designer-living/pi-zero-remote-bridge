@@ -106,7 +106,7 @@ jobs:
             echo '${{ secrets.APK_PRIVATE_KEY }}' > remote-bridge.rsa &&
             echo '${{ secrets.APK_PUBLIC_KEY }}' > remote-bridge.rsa.pub &&
             chmod 600 remote-bridge.rsa &&
-            apk index -o APKINDEX.tar.gz -k remote-bridge.rsa packages/*.apk &&
+            apk index -o APKINDEX.tar.gz -s remote-bridge.rsa packages/*.apk &&
             mv packages/*.apk . &&
             rm -rf packages remote-bridge.rsa"
 
@@ -115,3 +115,4 @@ jobs:
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: ./dist
+
