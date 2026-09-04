@@ -46,13 +46,18 @@ jobs:
             sh -c "apk add --no-cache make gcc musl-dev linux-headers && \
                    make VERSION=${{ steps.vars.outputs.VERSION }} CFLAGS='-static -O3 -Wall -Wextra'"
 
+      - name: Set up Signing Key for nFPM
+        run: |
+          echo "${{ secrets.APK_PRIVATE_KEY }}" > remote-bridge.rsa
+          chmod 600 remote-bridge.rsa
+
       - name: Build Debian package
         env:
           VERSION: ${{ steps.vars.outputs.VERSION }}
           ARCH: ${{ matrix.arch }}
         run: nfpm package --config packaging/nfpm-deb.yaml --packager deb --target .
 
-      - name: Build Alpine package
+      - name: Build Alpine package (Signed natively by nFPM)
         env:
           VERSION: ${{ steps.vars.outputs.VERSION }}
           ARCH: ${{ matrix.arch }}
@@ -68,23 +73,43 @@ jobs:
             *.deb
             *.apk
             remote_bridge-${{ steps.vars.outputs.VERSION }}-${{ matrix.arch }}
-            
-      - name: Set up Signing Key
-        run: |
-          echo "${{ secrets.APK_PRIVATE_KEY }}" > remote-bridge.rsa
-          chmod 600 remote-bridge.rsa
-      
-      - name: Sign APK Package
-        run: |
-          # Install abuild tools if not present
-          sudo apt-get install -y abuild || sudo apk add abuild
-          
-          # Sign the package using your private key
-          abuild-sign -k remote-bridge.rsa path/to/your-package.apk
-      
-      - name: Deploy to GitHub Pages (APK Repository)
+
+      - name: Upload APK artifact for repository indexing
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk-packages-${{ matrix.arch }}
+          path: "*.apk"
+
+  deploy-apk-repo:
+    needs: build-packages
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pages: write
+    steps:
+      - name: Download all APK artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist/packages
+          pattern: apk-packages-*
+          merge-multiple: true
+
+      - name: Generate APKINDEX and prepare GH-Pages site
+        uses: docker://alpine:latest
+        with:
+          entrypoint: /bin/sh
+          args: -c "
+            apk add --no-cache apk-tools &&
+            cd dist &&
+            echo '${{ secrets.APK_PRIVATE_KEY }}' > remote-bridge.rsa &&
+            echo '${{ secrets.APK_PUBLIC_KEY }}' > remote-bridge.rsa.pub &&
+            chmod 600 remote-bridge.rsa &&
+            apk index -o APKINDEX.tar.gz -k remote-bridge.rsa packages/*.apk &&
+            mv packages/*.apk . &&
+            rm -rf packages remote-bridge.rsa"
+
+      - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v3
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./dist # Directory containing your signed APK files and public key
-
+          publish_dir: ./dist
