@@ -103,32 +103,33 @@ jobs:
             apk add --no-cache apk-tools abuild
             cd dist
 
-            # 1. Setup keys
+            # 1. Setup signing key
             echo '${{ secrets.APK_PRIVATE_KEY }}' > remote-bridge.rsa
             echo '${{ secrets.APK_PUBLIC_KEY }}' > remote-bridge.rsa.pub
             chmod 600 remote-bridge.rsa
 
-            # 2. Create architecture folders
+            # 2. Create architecture directories
             mkdir -p armhf aarch64 x86_64
 
-            # 3. Move packages into arch folders
+            # 3. Move packages into respective folders
             mv packages/*armhf*.apk armhf/ 2>/dev/null || true
             mv packages/*aarch64*.apk aarch64/ 2>/dev/null || true
             mv packages/*x86_64*.apk x86_64/ 2>/dev/null || true
 
             KEY_PATH=\"\$(pwd)/remote-bridge.rsa\"
 
-            # 4. Standardize filenames, index, and sign each architecture directory
+            # 4. Generate and sign APKINDEX inside each architecture directory
             for ARCH in armhf aarch64 x86_64; do
               if [ -d \"\$ARCH\" ] && [ \$(ls -A \"\$ARCH\") ]; then
                 cd \"\$ARCH\"
                 
-                # Inspect local file header (-W) to get full package name and version
+                # Standardize file names to <pkg>-<ver>.apk if nFPM added arch suffixes
                 for FILE in *.apk; do
                   if [ -f \"\$FILE\" ] && [ \"\$FILE\" != \"APKINDEX.tar.gz\" ]; then
-                    PKG_NAME=\$(apk info --allow-untrusted -W \"\$FILE\" | head -n1 | awk '{print \$1}')
-                    if [ -n \"\$PKG_NAME\" ]; then
-                      mv \"\$FILE\" \"\${PKG_NAME}.apk\"
+                    # Extract internal Alpine package identifier string
+                    TARGET_NAME=\$(apk info --allow-untrusted -W \"\$FILE\" | awk '{print \$1}')
+                    if [ -n \"\$TARGET_NAME\" ] && [ \"\$FILE\" != \"\${TARGET_NAME}.apk\" ]; then
+                      mv \"\$FILE\" \"\${TARGET_NAME}.apk\"
                     fi
                   fi
                 done
@@ -139,10 +140,11 @@ jobs:
               fi
             done
 
-            # 5. Clean up temporary files
+            # 5. Clean up temporary secret files
             touch .nojekyll
             rm -rf packages remote-bridge.rsa
           "
+
 
 
 
