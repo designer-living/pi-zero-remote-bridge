@@ -116,11 +116,12 @@ jobs:
             mv packages/*aarch64.apk aarch64/ 2>/dev/null || true
             mv packages/*x86_64.apk x86_64/ 2>/dev/null || true
 
-            # 4. Index and sign each directory
+            # 4. Index and sign each directory using absolute path to the key
+            KEY_PATH=\"\$(pwd)/remote-bridge.rsa\"
             for ARCH in armhf aarch64 x86_64; do
               if [ -d \"\$ARCH\" ] && [ \$(ls -A \"\$ARCH\") ]; then
                 apk index --allow-untrusted -o \"\$ARCH/APKINDEX.tar.gz\" \"\$ARCH\"/*.apk
-                abuild-sign -k remote-bridge.rsa \"\$ARCH/APKINDEX.tar.gz\"
+                abuild-sign -k \"\$KEY_PATH\" \"\$ARCH/APKINDEX.tar.gz\"
               fi
             done
 
@@ -128,6 +129,7 @@ jobs:
             touch .nojekyll
             rm -rf packages remote-bridge.rsa
           "
+
 
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v3
