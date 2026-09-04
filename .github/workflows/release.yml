@@ -97,39 +97,37 @@ jobs:
           merge-multiple: true
 
       - name: Organize Architectures, Generate Indexes, and Prepare Site
-        uses: docker://alpine:latest
-        with:
-          entrypoint: /bin/sh
-          args: |
+        run: |
+          docker run --rm -v "$PWD:/work" -w /work alpine:latest /bin/sh -c "
             set -e
             apk add --no-cache apk-tools abuild
             cd dist
 
             # 1. Setup keys
-            echo "${{ secrets.APK_PRIVATE_KEY }}" > remote-bridge.rsa
-            echo "${{ secrets.APK_PUBLIC_KEY }}" > remote-bridge.rsa.pub
+            echo '${{ secrets.APK_PRIVATE_KEY }}' > remote-bridge.rsa
+            echo '${{ secrets.APK_PUBLIC_KEY }}' > remote-bridge.rsa.pub
             chmod 600 remote-bridge.rsa
 
             # 2. Create architecture folders
             mkdir -p armhf aarch64 x86_64
 
-            # 3. Move packages (suppress error if a specific arch isn't present)
+            # 3. Move packages
             mv packages/*armhf.apk armhf/ 2>/dev/null || true
             mv packages/*aarch64.apk aarch64/ 2>/dev/null || true
             mv packages/*x86_64.apk x86_64/ 2>/dev/null || true
 
             # 4. Index and sign each directory
             for ARCH in armhf aarch64 x86_64; do
-              if [ -d "$ARCH" ] && [ "$(ls -A $ARCH)" ]; then
-                apk index --allow-untrusted -o "$ARCH/APKINDEX.tar.gz" "$ARCH"/*.apk
-                abuild-sign -k remote-bridge.rsa "$ARCH/APKINDEX.tar.gz"
+              if [ -d \"\$ARCH\" ] && [ \$(ls -A \"\$ARCH\") ]; then
+                apk index --allow-untrusted -o \"\$ARCH/APKINDEX.tar.gz\" \"\$ARCH\"/*.apk
+                abuild-sign -k remote-bridge.rsa \"\$ARCH/APKINDEX.tar.gz\"
               fi
             done
 
             # 5. Clean up temporary files
             touch .nojekyll
             rm -rf packages remote-bridge.rsa
-
+          "
 
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v3
