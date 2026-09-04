@@ -2,10 +2,10 @@ name: remote-bridge
 arch: ${ARCH}
 platform: linux
 version: ${VERSION}
-maintainer: "pi-zero-remote-bridge"
+maintainer: "foxy82 <foxy82.githubl@gmail.com>"
 description: |
-  IR Remote to Network Bridge.
-  Reads key events from an IR remote control and forwards
+  Remote to Network Bridge.
+  Reads key events from an remote control and forwards
   them over UDP to a remote server. Monitors /dev/input for
   hotplug events and reconnects automatically.
 license: MIT
