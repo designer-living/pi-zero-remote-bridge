@@ -81,6 +81,7 @@ enum {
 };
 
 static int log_level = LEVEL_INFO;
+static int edge_repeat_count = 1;
 
 /* -------- Logging helper with UTC timestamp -------- */
 static void log_print(int level, const char *level_name, const char *fmt, ...) {
@@ -253,6 +254,9 @@ static int load_config(const char *filename) {
             else if (strcasecmp(val, "DEBUG") == 0) log_level = LEVEL_DEBUG;
             else if (strcasecmp(val, "INFO") == 0)  log_level = LEVEL_INFO;
             else if (strcasecmp(val, "ERROR") == 0) log_level = LEVEL_ERROR;
+        } else if (strcasecmp(key, "EDGE_REPEAT_COUNT") == 0) {
+            edge_repeat_count = atoi(val);
+            if (edge_repeat_count < 1) edge_repeat_count = 1;
         } else if (strcasecmp(key, "REMOTE") == 0) {
             char name[MAX_NAME], ip[64];
             int port;
@@ -293,6 +297,7 @@ int main(int argc, char *argv[]) {
         const char *remote_name = argv[1];
         const char *server_ip   = argv[2];
         int server_port         = atoi(argv[3]);
+        int edge_repeat_arg = 1;
 
         if (argc >= 5) {
             if (strcasecmp(argv[4], "TRACE") == 0) log_level = LEVEL_TRACE;
@@ -301,14 +306,20 @@ int main(int argc, char *argv[]) {
             else if (strcasecmp(argv[4], "ERROR") == 0) log_level = LEVEL_ERROR;
         }
 
+        if (argc >= 6) {
+            edge_repeat_arg = atoi(argv[5]);
+            if (edge_repeat_arg < 1) edge_repeat_arg = 1;
+        }
+        edge_repeat_count = edge_repeat_arg;
         add_mapping(remote_name, server_ip, server_port);
     } else {
         fprintf(stderr,
             "Remote Bridge version %s\n"
-            "Usage: %s <exact_remote_name> <server_ip> <server_port> [LOG_LEVEL]\n"
+            "Usage: %s <exact_remote_name> <server_ip> <server_port> [LOG_LEVEL] [EDGE_REPEAT_COUNT]\n"
             "   or: %s -c <config_file>\n"
             "\n"
-            "Log levels: ERROR, INFO (default), DEBUG, TRACE\n",
+            "Log levels: ERROR, INFO (default), DEBUG, TRACE\n"
+            "Edge repeat count: Sends key down/up events X times (default 1)\n",
             VERSION, argv[0], argv[0]);
         return 1;
     }
@@ -450,34 +461,44 @@ int main(int argc, char *argv[]) {
                     } else if (ev.type == EV_KEY) {
                         LOG_TRACE("Key Event (%s): code=%d, value=%d\n", mappings[m_idx].name, ev.code, ev.value);
 
-                        pkt.header       = PKT_MAKE_HEADER(PACKET_FORMAT_VERSION);
-                        pkt.timestamp_ms = htonl((uint32_t)(now_ms() & 0xFFFFFFFF));
-                        pkt.key_code     = htons((uint16_t)ev.code);
-                        pkt.scan_code    = htonl(mappings[m_idx].pending_scan_code);
-                        pkt.value        = (int8_t)ev.value;
-                    
+                        uint32_t event_timestamp =
+                            (uint32_t)(now_ms() & 0xFFFFFFFF);
+
+                        int send_count =
+                            (ev.value == 0 || ev.value == 1)
+                                ? edge_repeat_count
+                                : 1;
+
+                        for (int repeat = 0; repeat < send_count; repeat++) {
+                            pkt.header       = PKT_MAKE_HEADER(PACKET_FORMAT_VERSION);
+                            pkt.timestamp_ms = htonl(event_timestamp);
+                            pkt.key_code     = htons((uint16_t)ev.code);
+                            pkt.scan_code    = htonl(mappings[m_idx].pending_scan_code);
+                            pkt.value        = (int8_t)ev.value;
+
+                            if (log_level >= LEVEL_TRACE) {
+                                char hex[sizeof(pkt) * 3 + 1];
+                                hex_bytes(&pkt, sizeof(pkt), hex);
+                                LOG_TRACE("Sending packet (%zu bytes): buf=[%s]\n",
+                                    sizeof(pkt), hex);
+                            }
+                            ssize_t sent = sendto(sock,
+                                                  &pkt, sizeof(pkt), 0,
+                                                  (struct sockaddr *)&mappings[m_idx].server_addr,
+                                                  sizeof(struct sockaddr_in));
+                            if (sent < 0) {
+                                LOG_ERROR("Failed to send UDP packet: %s\n", strerror(errno));
+                            } else {
+                                LOG_TRACE("Sent UDP packet for key %d, value %d to %s:%d\n",
+                                    ev.code, ev.value,
+                                    inet_ntoa(mappings[m_idx].server_addr.sin_addr),
+                                    ntohs(mappings[m_idx].server_addr.sin_port));
+                            }
+                        }
+
                         /* Only clear the scan code when key is released (value == 0) */
                         if (ev.value == 0) {
                             mappings[m_idx].pending_scan_code = 0;
-                        }
-
-                        if (log_level >= LEVEL_TRACE) {
-                            char hex[sizeof(pkt) * 3 + 1];
-                            hex_bytes(&pkt, sizeof(pkt), hex);
-                            LOG_TRACE("Sending packet (%zu bytes): buf=[%s]\n",
-                                sizeof(pkt), hex);
-                        }
-                        ssize_t sent = sendto(sock,
-                                              &pkt, sizeof(pkt), 0,
-                                              (struct sockaddr *)&mappings[m_idx].server_addr,
-                                              sizeof(struct sockaddr_in));
-                        if (sent < 0) {
-                            LOG_ERROR("Failed to send UDP packet: %s\n", strerror(errno));
-                        } else {
-                            LOG_TRACE("Sent UDP packet for key %d, value %d to %s:%d\n",
-                                ev.code, ev.value,
-                                inet_ntoa(mappings[m_idx].server_addr.sin_addr),
-                                ntohs(mappings[m_idx].server_addr.sin_port));
                         }
                     }
                 }
