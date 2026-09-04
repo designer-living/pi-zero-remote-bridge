@@ -95,16 +95,15 @@ nano remote-bridge.conf
 ```conf
 LOG_LEVEL="INFO"
 
-# Format: REMOTE="<exact_remote_name>,<server_ip>,<server_port>,[repeat_delay_ms]"
-REMOTE="IR-receiver,192.168.1.100,9999,0"
-REMOTE="Second-Remote,192.168.1.101,9999,100"
+# Format: REMOTE="<exact_remote_name>,<server_ip>,<server_port>"
+REMOTE="IR-receiver,192.168.1.100,9999"
+REMOTE="Second-Remote,192.168.1.101,9999"
 ```
 
 **Important**: Make sure to set the values correctly:
 - REMOTE_NAME: The exact name from evtest.
 - SERVER_IP: Your server's IP address.
 - SERVER_PORT: Your server's port number.
-- REPEAT_DELAY_MS: (Optional) Throttles repeat events (value=2) to every X ms.
 
 ### 4. Install
 **Copy the config file first, then install:**
