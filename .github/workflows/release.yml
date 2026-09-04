@@ -101,12 +101,13 @@ jobs:
         with:
           entrypoint: /bin/sh
           args: -c "
-            apk add --no-cache apk-tools &&
+            apk add --no-cache apk-tools abuild &&
             cd dist &&
             echo '${{ secrets.APK_PRIVATE_KEY }}' > remote-bridge.rsa &&
             echo '${{ secrets.APK_PUBLIC_KEY }}' > remote-bridge.rsa.pub &&
             chmod 600 remote-bridge.rsa &&
-            apk index -o APKINDEX.tar.gz -s remote-bridge.rsa packages/*.apk &&
+            apk index -o APKINDEX.tar.gz packages/*.apk &&
+            abuild-sign -k remote-bridge.rsa APKINDEX.tar.gz &&
             mv packages/*.apk . &&
             rm -rf packages remote-bridge.rsa"
 
