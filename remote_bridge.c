@@ -148,15 +148,13 @@ typedef struct {
     char dev_path[256];
     struct sockaddr_in server_addr;
     int evfd;
-    int repeat_delay_ms;
-    uint64_t last_repeat_send_ms;
     uint32_t pending_scan_code;
 } Mapping;
 
 static Mapping mappings[MAX_MAPPINGS];
 static int num_mappings = 0;
 
-static int add_mapping(const char *name, const char *ip, int port, int delay) {
+static int add_mapping(const char *name, const char *ip, int port) {
     if (num_mappings >= MAX_MAPPINGS) {
         LOG_ERROR("Maximum number of mappings (%d) reached\n", MAX_MAPPINGS);
         return -1;
@@ -166,8 +164,6 @@ static int add_mapping(const char *name, const char *ip, int port, int delay) {
     m->name[MAX_NAME - 1] = '\0';
     m->dev_path[0] = '\0';
     m->evfd = -1;
-    m->repeat_delay_ms = delay;
-    m->last_repeat_send_ms = 0;
     m->pending_scan_code = 0;
 
     memset(&m->server_addr, 0, sizeof(m->server_addr));
@@ -197,7 +193,7 @@ static int find_available_mapping(int fd, const char *path) {
                 LOG_INFO("Matched device: %s at %s for mapping %d\n", name, path, i);
                 return i;
             } else {
-                LOG_TRACE("Mapping %d name (\"%s\") does not match device name (\"%s\")\n", 
+                LOG_TRACE("Mapping %d name (\"%s\") does not match device name (\"%s\")\n",
                     i, mappings[i].name, name);
             }
         }
@@ -259,9 +255,9 @@ static int load_config(const char *filename) {
             else if (strcasecmp(val, "ERROR") == 0) log_level = LEVEL_ERROR;
         } else if (strcasecmp(key, "REMOTE") == 0) {
             char name[MAX_NAME], ip[64];
-            int port, delay = 0;
+            int port;
             // Skip leading/trailing spaces in the sscanf fields
-            int n = sscanf(val, " %255[^,] , %63[^,] , %d , %d", name, ip, &port, &delay);
+            int n = sscanf(val, " %255[^,] , %63[^,] , %d", name, ip, &port);
             if (n >= 3) {
                 // Trim trailing spaces from name
                 size_t n_len = strlen(name);
@@ -276,9 +272,9 @@ static int load_config(const char *filename) {
                     i_len--;
                 }
 
-                if (add_mapping(name, ip, port, delay) == 0) {
-                    LOG_DEBUG("Loaded mapping: Remote=\"%s\", Server=%s:%d, Delay=%dms\n",
-                        name, ip, port, delay);
+                if (add_mapping(name, ip, port) == 0) {
+                    LOG_DEBUG("Loaded mapping: Remote=\"%s\", Server=%s:%d\n",
+                        name, ip, port);
                 }
             } else {
                 LOG_ERROR("Invalid REMOTE line: %s=%s\n", key, val);
@@ -297,7 +293,6 @@ int main(int argc, char *argv[]) {
         const char *remote_name = argv[1];
         const char *server_ip   = argv[2];
         int server_port         = atoi(argv[3]);
-        int delay = 0;
 
         if (argc >= 5) {
             if (strcasecmp(argv[4], "TRACE") == 0) log_level = LEVEL_TRACE;
@@ -306,18 +301,14 @@ int main(int argc, char *argv[]) {
             else if (strcasecmp(argv[4], "ERROR") == 0) log_level = LEVEL_ERROR;
         }
 
-        if (argc >= 6) {
-            delay = atoi(argv[5]);
-        }
-        add_mapping(remote_name, server_ip, server_port, delay);
+        add_mapping(remote_name, server_ip, server_port);
     } else {
         fprintf(stderr,
             "Remote Bridge version %s\n"
-            "Usage: %s <exact_remote_name> <server_ip> <server_port> [LOG_LEVEL] [REPEAT_DELAY_MS]\n"
+            "Usage: %s <exact_remote_name> <server_ip> <server_port> [LOG_LEVEL]\n"
             "   or: %s -c <config_file>\n"
             "\n"
-            "Log levels: ERROR, INFO (default), DEBUG, TRACE\n"
-            "Repeat delay: Throttles repeat events (value=2) to every X ms (default 0=disabled)\n",
+            "Log levels: ERROR, INFO (default), DEBUG, TRACE\n",
             VERSION, argv[0], argv[0]);
         return 1;
     }
@@ -325,9 +316,9 @@ int main(int argc, char *argv[]) {
     LOG_ALWAYS("Remote Bridge version %s\n", VERSION);
     LOG_ALWAYS("Log Level: %s\n", level_to_str(log_level));
     for (int i = 0; i < num_mappings; i++) {
-        LOG_ALWAYS("Mapping %d: Remote=\"%s\", Server=%s:%d, Delay=%dms\n",
+        LOG_ALWAYS("Mapping %d: Remote=\"%s\", Server=%s:%d\n",
             i, mappings[i].name, inet_ntoa(mappings[i].server_addr.sin_addr),
-            ntohs(mappings[i].server_addr.sin_port), mappings[i].repeat_delay_ms);
+            ntohs(mappings[i].server_addr.sin_port));
     }
 
     /* UDP socket */
@@ -434,7 +425,7 @@ int main(int argc, char *argv[]) {
 
                     if (n <= 0) {
                         if (n == 0 || errno == ENODEV) {
-                            LOG_INFO("Remote \"%s\" disconnected (%s)\n", 
+                            LOG_INFO("Remote \"%s\" disconnected (%s)\n",
                                      mappings[m_idx].name, n == 0 ? "EOF" : "ENODEV");
                             close(mappings[m_idx].evfd);
                             mappings[m_idx].evfd = -1;
@@ -458,16 +449,6 @@ int main(int argc, char *argv[]) {
                         LOG_TRACE("Scan Event (%s): scan_code=0x%x\n", mappings[m_idx].name, (unsigned)mappings[m_idx].pending_scan_code);
                     } else if (ev.type == EV_KEY) {
                         LOG_TRACE("Key Event (%s): code=%d, value=%d\n", mappings[m_idx].name, ev.code, ev.value);
-
-                        /* Throttle repeat events (value=2) if repeat_delay_ms is set */
-                        if (ev.value == 2 && mappings[m_idx].repeat_delay_ms > 0) {
-                            uint64_t now = now_ms();
-                            if (now - mappings[m_idx].last_repeat_send_ms < (uint64_t)mappings[m_idx].repeat_delay_ms) {
-                                LOG_TRACE("Throttling repeat event for key %d\n", ev.code);
-                                continue;
-                            }
-                            mappings[m_idx].last_repeat_send_ms = now;
-                        }
 
                         pkt.header       = PKT_MAKE_HEADER(PACKET_FORMAT_VERSION);
                         pkt.timestamp_ms = htonl((uint32_t)(now_ms() & 0xFFFFFFFF));
