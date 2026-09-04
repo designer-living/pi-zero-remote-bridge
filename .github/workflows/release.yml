@@ -106,10 +106,13 @@ jobs:
             echo '${{ secrets.APK_PRIVATE_KEY }}' > remote-bridge.rsa &&
             echo '${{ secrets.APK_PUBLIC_KEY }}' > remote-bridge.rsa.pub &&
             chmod 600 remote-bridge.rsa &&
+            mkdir -p /etc/apk/keys &&
+            cp remote-bridge.rsa.pub /etc/apk/keys/ &&
             apk index -o APKINDEX.tar.gz packages/*.apk &&
             abuild-sign -k remote-bridge.rsa APKINDEX.tar.gz &&
             mv packages/*.apk . &&
             rm -rf packages remote-bridge.rsa"
+
 
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v3
