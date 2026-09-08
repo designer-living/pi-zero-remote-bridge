@@ -117,15 +117,39 @@ LOG_LEVEL="INFO"
 # Send the KEY DOWN / KEY UP packet this many times. KEY HOLD is still only sent once.
 EDGE_REPEAT_COUNT=1
 
-# Format: REMOTE="<exact_remote_name>,<server_ip>,<server_port>"
+# Format: REMOTE="<exact_remote_name>,<server_ip>,<server_port>[,<device_id_substring>]"
 REMOTE="IR-receiver,192.168.1.100,9999"
 REMOTE="Second-Remote,192.168.1.101,9999"
+
+# Two identical remotes (same evdev name) routed to different servers.
+# The optional 4th field is matched as a substring of EITHER the device's
+# physical location (EVIOCGPHYS) or its unique id (EVIOCGUNIQ):
+#   - USB remote:       the bus/port path, e.g. usb-3f980000.usb-1.2
+#   - Bluetooth remote: the remote's own address, e.g. e4:e0:c5:11:22:33
+REMOTE="Sony USB Remote,192.168.1.100,9999,usb-3f980000.usb-1.2"
+REMOTE="Sony USB Remote,192.168.1.101,9999,usb-3f980000.usb-1.3"
+REMOTE="Sony BT Remote,192.168.1.100,9999,e4:e0:c5:11:22:33"
+REMOTE="Sony BT Remote,192.168.1.101,9999,e4:e0:c5:44:55:66"
 ```
 
 **Important**: Make sure to set the values correctly:
 - REMOTE_NAME: The exact name from evtest.
 - SERVER_IP: Your server's IP address.
 - SERVER_PORT: Your server's port number.
+- DEVICE_ID_SUBSTRING (optional): only needed to tell apart two remotes
+  that report the *same* name. Look up both candidate values with:
+  ```bash
+  cat /sys/class/input/eventX/device/phys   # USB: bus/port path
+  cat /sys/class/input/eventX/device/uniq   # Bluetooth: remote's address
+  # or: udevadm info --name=/dev/input/eventX | grep -E 'ID_PATH=|_UNIQ='
+  ```
+  Use whichever is stable and distinct for your remotes: the USB port path
+  (stable as long as the remote stays in the same port) or, for Bluetooth,
+  the remote's MAC (stable across reconnects; for BLE remotes that rotate
+  their address, pair/bond them so the kernel resolves the identity
+  address). Lines without this field match any device, as before.
+  Note: for Bluetooth, `phys` is the *adapter's* address, not the remote's
+  — so two BT remotes on one adapter can only be separated by `uniq`.
 
 ### 4. Install
 **Copy the config file first, then install:**

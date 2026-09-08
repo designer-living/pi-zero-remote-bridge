@@ -68,14 +68,19 @@ libc). The flow:
 
 1. **Config loading** (`load_config` / CLI args) builds a list of
    `Mapping` structs (`mappings[]`, max `MAX_MAPPINGS = 32`), each with a
-   target remote name, destination `sockaddr_in`, and an optional repeat
-   throttle delay. Two invocation modes: legacy positional args (single
-   remote) or `-c <file>` (multi-remote, `REMOTE="name,ip,port,delay"`
-   lines).
+   target remote name, destination `sockaddr_in`, and an optional
+   `id_match` (substring of the device's `EVIOCGPHYS` location *or*
+   `EVIOCGUNIQ` id — USB port path or Bluetooth address). Two invocation
+   modes: legacy positional args (single remote) or `-c <file>`
+   (multi-remote, `REMOTE="name,ip,port[,id]"` lines).
 2. **Device discovery**: on startup, scans `/dev/input/event*`, opens each,
-   reads its name via `EVIOCGNAME`, and matches it against unmapped
-   `Mapping` entries (`find_available_mapping`). Matched devices' fds are
-   stored on the mapping.
+   reads its name via `EVIOCGNAME` (and `phys`/`uniq` via `EVIOCGPHYS`/
+   `EVIOCGUNIQ`), and matches it against unmapped `Mapping` entries
+   (`find_available_mapping`). Matching runs in two passes — mappings that
+   set `id_match` first, so two identically-named remotes each claim their
+   own line (`id_match` must be a substring of the device's `phys` or
+   `uniq`), then unfiltered mappings. Matched devices' fds are stored on
+   the mapping.
 3. **Hotplug**: an `inotify` watch on `/dev/input` catches `IN_CREATE` /
    `IN_ATTRIB` / `IN_MOVED_TO` (device appears — re-run the matching logic)
    and `IN_DELETE` (device removed — clear the mapping's fd). Devices can
