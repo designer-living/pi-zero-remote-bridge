@@ -36,6 +36,8 @@ struct inotify_event {
 static int inotify_init1(int flags) { (void)flags; return -1; }
 static int inotify_add_watch(int fd, const char *pathname, uint32_t mask) { (void)fd; (void)pathname; (void)mask; return -1; }
 #define EVIOCGNAME(len) 0
+#define EVIOCGPHYS(len) 0
+#define EVIOCGUNIQ(len) 0
 #endif
 #include <arpa/inet.h>
 #include <sys/socket.h>
@@ -146,6 +148,7 @@ static const char* level_to_str(int level) {
 
 typedef struct {
     char name[MAX_NAME];
+    char id_match[64];      /* optional substring of the device's EVIOCGPHYS location or EVIOCGUNIQ id; "" = match any device */
     char dev_path[256];
     struct sockaddr_in server_addr;
     int evfd;
@@ -155,7 +158,7 @@ typedef struct {
 static Mapping mappings[MAX_MAPPINGS];
 static int num_mappings = 0;
 
-static int add_mapping(const char *name, const char *ip, int port) {
+static int add_mapping(const char *name, const char *ip, int port, const char *id_match) {
     if (num_mappings >= MAX_MAPPINGS) {
         LOG_ERROR("Maximum number of mappings (%d) reached\n", MAX_MAPPINGS);
         return -1;
@@ -163,6 +166,12 @@ static int add_mapping(const char *name, const char *ip, int port) {
     Mapping *m = &mappings[num_mappings++];
     strncpy(m->name, name, MAX_NAME - 1);
     m->name[MAX_NAME - 1] = '\0';
+    if (id_match && *id_match) {
+        strncpy(m->id_match, id_match, sizeof(m->id_match) - 1);
+        m->id_match[sizeof(m->id_match) - 1] = '\0';
+    } else {
+        m->id_match[0] = '\0';
+    }
     m->dev_path[0] = '\0';
     m->evfd = -1;
     m->pending_scan_code = 0;
@@ -180,23 +189,51 @@ static int add_mapping(const char *name, const char *ip, int port) {
 
 static int find_available_mapping(int fd, const char *path) {
     char name[MAX_NAME] = {0};
+    char phys[64] = {0};
+    char uniq[64] = {0};
 
     if (ioctl(fd, EVIOCGNAME(sizeof(name)), name) < 0) {
         LOG_DEBUG("Failed to get name for %s: %s\n", path, strerror(errno));
         return -1;
     }
+    if (ioctl(fd, EVIOCGPHYS(sizeof(phys)), phys) < 0) {
+        phys[0] = '\0';   /* USB: bus/port path; not all devices report it */
+    }
+    if (ioctl(fd, EVIOCGUNIQ(sizeof(uniq)), uniq) < 0) {
+        uniq[0] = '\0';   /* Bluetooth: the remote's own address; empty on most USB devices */
+    }
 
-    LOG_DEBUG("Checking device %s: name=\"%s\"\n", path, name);
+    LOG_DEBUG("Checking device %s: name=\"%s\" phys=\"%s\" uniq=\"%s\"\n", path, name, phys, uniq);
 
-    for (int i = 0; i < num_mappings; i++) {
-        if (mappings[i].evfd < 0) {
-            if (strcmp(mappings[i].name, name) == 0) {
-                LOG_INFO("Matched device: %s at %s for mapping %d\n", name, path, i);
-                return i;
-            } else {
+    /* Two passes: mappings with an id filter first, so two identically-named
+     * remotes each land on their own line; then mappings with no filter,
+     * which match any device. The filter is a substring of either the
+     * device's physical location (USB port path) or its unique id
+     * (Bluetooth address). */
+    for (int pass = 0; pass < 2; pass++) {
+        for (int i = 0; i < num_mappings; i++) {
+            if (mappings[i].evfd >= 0) continue;
+
+            int has_filter = mappings[i].id_match[0] != '\0';
+            if ((pass == 0) != (has_filter != 0)) continue;
+
+            if (strcmp(mappings[i].name, name) != 0) {
                 LOG_TRACE("Mapping %d name (\"%s\") does not match device name (\"%s\")\n",
                     i, mappings[i].name, name);
+                continue;
             }
+
+            if (has_filter &&
+                (phys[0] == '\0' || strstr(phys, mappings[i].id_match) == NULL) &&
+                (uniq[0] == '\0' || strstr(uniq, mappings[i].id_match) == NULL)) {
+                LOG_TRACE("Mapping %d id filter (\"%s\") matches neither phys (\"%s\") nor uniq (\"%s\")\n",
+                    i, mappings[i].id_match, phys, uniq);
+                continue;
+            }
+
+            LOG_INFO("Matched device: %s at %s (phys \"%s\" uniq \"%s\") for mapping %d\n",
+                name, path, phys, uniq, i);
+            return i;
         }
     }
 
@@ -258,10 +295,12 @@ static int load_config(const char *filename) {
             edge_repeat_count = atoi(val);
             if (edge_repeat_count < 1) edge_repeat_count = 1;
         } else if (strcasecmp(key, "REMOTE") == 0) {
-            char name[MAX_NAME], ip[64];
+            char name[MAX_NAME], ip[64], id[64] = {0};
             int port;
-            // Skip leading/trailing spaces in the sscanf fields
-            int n = sscanf(val, " %255[^,] , %63[^,] , %d", name, ip, &port);
+            // Skip leading/trailing spaces in the sscanf fields. The 4th
+            // field (device id substring: USB port path or Bluetooth
+            // address) is optional.
+            int n = sscanf(val, " %255[^,] , %63[^,] , %d , %63[^,]", name, ip, &port, id);
             if (n >= 3) {
                 // Trim trailing spaces from name
                 size_t n_len = strlen(name);
@@ -275,10 +314,22 @@ static int load_config(const char *filename) {
                     ip[i_len - 1] = '\0';
                     i_len--;
                 }
+                // Trim leading and trailing spaces from the optional id field
+                char *id_p = id;
+                while (*id_p == ' ' || *id_p == '\t') id_p++;
+                size_t p_len = strlen(id_p);
+                while (p_len > 0 && (id_p[p_len - 1] == ' ' || id_p[p_len - 1] == '\t')) {
+                    id_p[--p_len] = '\0';
+                }
 
-                if (add_mapping(name, ip, port) == 0) {
-                    LOG_DEBUG("Loaded mapping: Remote=\"%s\", Server=%s:%d\n",
-                        name, ip, port);
+                if (add_mapping(name, ip, port, n >= 4 ? id_p : NULL) == 0) {
+                    if (n >= 4 && *id_p) {
+                        LOG_DEBUG("Loaded mapping: Remote=\"%s\", Server=%s:%d, Id~=\"%s\"\n",
+                            name, ip, port, id_p);
+                    } else {
+                        LOG_DEBUG("Loaded mapping: Remote=\"%s\", Server=%s:%d\n",
+                            name, ip, port);
+                    }
                 }
             } else {
                 LOG_ERROR("Invalid REMOTE line: %s=%s\n", key, val);
@@ -311,7 +362,7 @@ int main(int argc, char *argv[]) {
             if (edge_repeat_arg < 1) edge_repeat_arg = 1;
         }
         edge_repeat_count = edge_repeat_arg;
-        add_mapping(remote_name, server_ip, server_port);
+        add_mapping(remote_name, server_ip, server_port, NULL);
     } else {
         fprintf(stderr,
             "Remote Bridge version %s\n"
