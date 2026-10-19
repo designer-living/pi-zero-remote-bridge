@@ -1,2 +1,5 @@
 # Allow the input group to read input devices
 SUBSYSTEM=="input", GROUP="input", MODE="0660"
+
+# Fire TV remote app buttons (Netflix etc.) are only exposed via hidraw
+SUBSYSTEM=="hidraw", GROUP="input", MODE="0660"

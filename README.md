@@ -251,10 +251,12 @@ sudo /usr/local/bin/remote_bridge "Remote Name" <SERVER_IP> <SERVER_PORT> DEBUG
     - Or add an `mdev` rule to `/etc/mdev.conf`:
       ```
       event[0-9]+ root:input 660
+      hidraw[0-9]+ root:input 660
       ```
       Then restart `mdev` (or just reboot).
 4.  **Device Name**: The `REMOTE_NAME` must match the output of `evtest` *exactly*.
-5.  **UDP Connectivity**: Use `nc -u -l -p <PORT>` on your server to verify packets are arriving.
+5.  **Fire TV app buttons**: Netflix / Amazon Video / App Button / Amazon Music are read from the remote's `/dev/hidraw*` node (not evdev), so that node must also be readable by the `input` group (the `hidraw` line above, or the udev rule in this repo). They are forwarded as `KEY_UNKNOWN` with scan code `0xFF00A2` (Netflix), `0xFF00A1` (Amazon Video), `0xFF00A3` (App Button) and `0xFF00A4` (Amazon Music). Log lines appear at `TRACE`.
+6.  **UDP Connectivity**: Use `nc -u -l -p <PORT>` on your server to verify packets are arriving.
 
 ---
 

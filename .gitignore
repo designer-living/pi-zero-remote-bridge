@@ -56,3 +56,4 @@ dkms.conf
 
 remote_bridge
 /.idea/
+tests/test_hidraw

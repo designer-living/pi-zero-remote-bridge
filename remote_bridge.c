@@ -146,6 +146,63 @@ static const char* level_to_str(int level) {
 
 #define MAX_MAPPINGS 32
 
+/* Fire TV remote ("AR", Bluetooth HID): its Netflix / Amazon Video / App /
+ * Amazon Music buttons never reach evdev. They only arrive as vendor-page
+ * (0xFF00) input report 0xEF on the hidraw node: <0xEF> <code> <code> <code>,
+ * a keyboard-style array of up to 3 held codes, all zero when released. */
+#define HID_VENDOR_ID           0x0171
+#define HID_PRODUCT_ID          0x041E
+#define HID_APP_REPORT_ID       0xEF
+#define HID_APP_CODES           3
+#define HID_APP_SCAN_BASE       0xFF0000u   /* scan code = base | code; 0xFF00 page can't collide with consumer-page 0xc00xx */
+#define KEY_UNKNOWN_CODE        240
+#define HIDRAW_SYSFS_DIR        "/sys/class/hidraw"
+
+typedef struct {
+    uint8_t code;
+    int value;              /* 1 = press, 0 = release */
+} AppButtonEvent;
+
+static uint32_t app_button_scan_code(uint8_t code) {
+    return HID_APP_SCAN_BASE | code;
+}
+
+static const char *app_button_name(uint8_t code) {
+    switch (code) {
+        case 0xA1: return "Amazon Video";
+        case 0xA2: return "Netflix";
+        case 0xA3: return "App Button";
+        case 0xA4: return "Amazon Music";
+        default:   return "unknown";
+    }
+}
+
+/* Diffs a 0xEF report against the previous array (updated in place).
+ * Returns the number of events written to out (max 2 * HID_APP_CODES),
+ * releases first. Reports with any other ID, or too short, are ignored. */
+static int parse_app_button_report(const uint8_t *buf, size_t len,
+                                   uint8_t prev[HID_APP_CODES], AppButtonEvent *out) {
+    if (len < 1 + HID_APP_CODES || buf[0] != HID_APP_REPORT_ID) return 0;
+
+    const uint8_t *cur = buf + 1;
+    int n = 0;
+    for (int i = 0; i < HID_APP_CODES; i++) {
+        if (prev[i] == 0) continue;
+        int still_held = 0;
+        for (int j = 0; j < HID_APP_CODES; j++) if (cur[j] == prev[i]) still_held = 1;
+        if (!still_held) out[n++] = (AppButtonEvent){ prev[i], 0 };
+    }
+    for (int i = 0; i < HID_APP_CODES; i++) {
+        if (cur[i] == 0) continue;
+        int seen = 0;
+        for (int j = 0; j < HID_APP_CODES; j++) if (prev[j] == cur[i]) seen = 1;
+        for (int j = 0; j < i; j++) if (cur[j] == cur[i]) seen = 1;
+        if (!seen) out[n++] = (AppButtonEvent){ cur[i], 1 };
+    }
+    memcpy(prev, cur, HID_APP_CODES);
+    return n;
+}
+
 typedef struct {
     char name[MAX_NAME];
     char id_match[64];      /* optional substring of the device's EVIOCGPHYS location or EVIOCGUNIQ id; "" = match any device */
@@ -153,6 +210,10 @@ typedef struct {
     struct sockaddr_in server_addr;
     int evfd;
     uint32_t pending_scan_code;
+    char uniq[64];          /* EVIOCGUNIQ of the matched evdev node; ties the remote's hidraw node to this mapping */
+    int hidfd;              /* hidraw node of the same remote (vendor app buttons), or -1 */
+    char hid_path[256];
+    uint8_t hid_prev[HID_APP_CODES];
 } Mapping;
 
 static Mapping mappings[MAX_MAPPINGS];
@@ -175,6 +236,10 @@ static int add_mapping(const char *name, const char *ip, int port, const char *i
     m->dev_path[0] = '\0';
     m->evfd = -1;
     m->pending_scan_code = 0;
+    m->uniq[0] = '\0';
+    m->hidfd = -1;
+    m->hid_path[0] = '\0';
+    memset(m->hid_prev, 0, sizeof(m->hid_prev));
 
     memset(&m->server_addr, 0, sizeof(m->server_addr));
     m->server_addr.sin_family = AF_INET;
@@ -231,6 +296,7 @@ static int find_available_mapping(int fd, const char *path) {
                 continue;
             }
 
+            snprintf(mappings[i].uniq, sizeof(mappings[i].uniq), "%s", uniq);
             LOG_INFO("Matched device: %s at %s (phys \"%s\" uniq \"%s\") for mapping %d\n",
                 name, path, phys, uniq, i);
             return i;
@@ -238,6 +304,135 @@ static int find_available_mapping(int fd, const char *path) {
     }
 
     return -1;
+}
+
+static void send_key_packet(int sock, Mapping *m, uint16_t key_code, uint32_t scan_code, int value) {
+    struct Packet pkt;
+    uint32_t event_timestamp = (uint32_t)(now_ms() & 0xFFFFFFFF);
+
+    int send_count = (value == 0 || value == 1) ? edge_repeat_count : 1;
+
+    for (int repeat = 0; repeat < send_count; repeat++) {
+        pkt.header       = PKT_MAKE_HEADER(PACKET_FORMAT_VERSION);
+        pkt.timestamp_ms = htonl(event_timestamp);
+        pkt.key_code     = htons(key_code);
+        pkt.scan_code    = htonl(scan_code);
+        pkt.value        = (int8_t)value;
+
+        if (log_level >= LEVEL_TRACE) {
+            char hex[sizeof(pkt) * 3 + 1];
+            hex_bytes(&pkt, sizeof(pkt), hex);
+            LOG_TRACE("Sending packet (%zu bytes): buf=[%s]\n",
+                sizeof(pkt), hex);
+        }
+        ssize_t sent = sendto(sock,
+                              &pkt, sizeof(pkt), 0,
+                              (struct sockaddr *)&m->server_addr,
+                              sizeof(struct sockaddr_in));
+        if (sent < 0) {
+            LOG_ERROR("Failed to send UDP packet: %s\n", strerror(errno));
+        } else {
+            LOG_TRACE("Sent UDP packet for key %d, value %d to %s:%d\n",
+                key_code, value,
+                inet_ntoa(m->server_addr.sin_addr),
+                ntohs(m->server_addr.sin_port));
+        }
+    }
+}
+
+static void close_hidraw(Mapping *m) {
+    if (m->hidfd >= 0) close(m->hidfd);
+    m->hidfd = -1;
+    m->hid_path[0] = '\0';
+    memset(m->hid_prev, 0, sizeof(m->hid_prev));
+}
+
+/* Finds a hidraw node belonging to the Fire TV remote with the given
+ * Bluetooth address (HID_UNIQ in sysfs), by vendor/product id, not by number. */
+static int find_hidraw_path(const char *uniq, char *path, size_t path_len) {
+    DIR *d = opendir(HIDRAW_SYSFS_DIR);
+    if (!d) return -1;
+
+    struct dirent *ent;
+    int found = -1;
+    while (found < 0 && (ent = readdir(d))) {
+        if (strncmp(ent->d_name, "hidraw", 6) != 0) continue;
+
+        char uevent[sizeof(HIDRAW_SYSFS_DIR) + 2 * 256 + 16];
+        snprintf(uevent, sizeof(uevent), HIDRAW_SYSFS_DIR "/%s/device/uevent", ent->d_name);
+        FILE *f = fopen(uevent, "r");
+        if (!f) continue;
+
+        unsigned vid = 0, pid = 0;
+        char hid_uniq[64] = {0};
+        char line[256];
+        while (fgets(line, sizeof(line), f)) {
+            unsigned bus;
+            if (sscanf(line, "HID_ID=%x:%x:%x", &bus, &vid, &pid) == 3) continue;
+            sscanf(line, "HID_UNIQ=%63s", hid_uniq);
+        }
+        fclose(f);
+
+        if (vid != HID_VENDOR_ID || pid != HID_PRODUCT_ID) continue;
+        if (uniq[0] == '\0' || strcasecmp(uniq, hid_uniq) != 0) continue;
+
+        char candidate[256];
+        snprintf(candidate, sizeof(candidate), "/dev/%.200s", ent->d_name);
+        int in_use = 0;
+        for (int i = 0; i < num_mappings; i++)
+            if (strcmp(mappings[i].hid_path, candidate) == 0) in_use = 1;
+        if (in_use) continue;
+
+        snprintf(path, path_len, "%s", candidate);
+        found = 0;
+    }
+    closedir(d);
+    return found;
+}
+
+/* Opens the hidraw node for every matched remote that doesn't have one yet.
+ * Safe to call repeatedly (after an evdev match, or when a hidraw node appears). */
+static void attach_hidraw(void) {
+    for (int i = 0; i < num_mappings; i++) {
+        Mapping *m = &mappings[i];
+        if (m->evfd < 0 || m->hidfd >= 0) continue;
+
+        char path[256];
+        if (find_hidraw_path(m->uniq, path, sizeof(path)) < 0) continue;
+
+        int fd = open(path, O_RDONLY | O_NONBLOCK);
+        if (fd < 0) {
+            LOG_DEBUG("Failed to open %s for \"%s\": %s\n", path, m->name, strerror(errno));
+            continue;
+        }
+        m->hidfd = fd;
+        snprintf(m->hid_path, sizeof(m->hid_path), "%s", path);
+        memset(m->hid_prev, 0, sizeof(m->hid_prev));
+        LOG_INFO("Opened %s for app buttons of \"%s\"\n", path, m->name);
+    }
+}
+
+static void handle_hidraw(int sock, Mapping *m) {
+    uint8_t buf[256];
+    while (1) {
+        ssize_t n = read(m->hidfd, buf, sizeof(buf));
+        if (n < 0 && (errno == EAGAIN || errno == EINTR)) break;
+        if (n <= 0) {
+            LOG_INFO("hidraw %s for \"%s\" closed (%s)\n", m->hid_path, m->name,
+                     n == 0 ? "EOF" : strerror(errno));
+            close_hidraw(m);
+            break;
+        }
+
+        AppButtonEvent evs[2 * HID_APP_CODES];
+        int count = parse_app_button_report(buf, (size_t)n, m->hid_prev, evs);
+        for (int i = 0; i < count; i++) {
+            uint32_t scan = app_button_scan_code(evs[i].code);
+            LOG_TRACE("App Button Event (%s): %s code=0x%02x scan_code=0x%x value=%d\n",
+                      m->name, app_button_name(evs[i].code), evs[i].code, (unsigned)scan, evs[i].value);
+            send_key_packet(sock, m, KEY_UNKNOWN_CODE, scan, evs[i].value);
+        }
+    }
 }
 
 static int load_config(const char *filename) {
@@ -340,6 +535,7 @@ static int load_config(const char *filename) {
     return 0;
 }
 
+#ifndef REMOTE_BRIDGE_TEST
 /* -------- Main -------- */
 int main(int argc, char *argv[]) {
     if (argc >= 3 && strcmp(argv[1], "-c") == 0) {
@@ -401,6 +597,9 @@ int main(int argc, char *argv[]) {
         perror("inotify_add_watch");
         // Non-fatal, but we won't see hotplug events
     }
+    if (inotify_add_watch(ifd, "/dev", IN_CREATE | IN_ATTRIB | IN_DELETE | IN_MOVED_TO) < 0) {
+        perror("inotify_add_watch /dev");
+    }
 
     LOG_INFO("Scanning " INPUT_DIR " for remotes...\n");
 
@@ -432,16 +631,18 @@ int main(int argc, char *argv[]) {
     }
     closedir(d);
 
+    attach_hidraw();
+
     for (int i = 0; i < num_mappings; i++) {
         if (mappings[i].evfd < 0) {
             LOG_INFO("Mapping %d (\"%s\") not found during initial scan\n", i, mappings[i].name);
         }
     }
 
-    struct pollfd fds[MAX_MAPPINGS + 1];
+    struct pollfd fds[2 * MAX_MAPPINGS + 1];
     int mapping_indices[MAX_MAPPINGS];
     struct input_event ev;
-    struct Packet pkt;
+    int hid_indices[MAX_MAPPINGS];
 
     while (1) {
         int nfds = 0;
@@ -460,6 +661,17 @@ int main(int argc, char *argv[]) {
             .fd = ifd,
             .events = POLLIN
         };
+
+        int hid_start = nfds;
+        for (int i = 0; i < num_mappings; i++) {
+            if (mappings[i].hidfd >= 0) {
+                hid_indices[nfds - hid_start] = i;
+                fds[nfds++] = (struct pollfd){
+                    .fd = mappings[i].hidfd,
+                    .events = POLLIN
+                };
+            }
+        }
 
         int ret = poll(fds, nfds, -1);
         if (ret < 0) {
@@ -512,40 +724,8 @@ int main(int argc, char *argv[]) {
                     } else if (ev.type == EV_KEY) {
                         LOG_TRACE("Key Event (%s): code=%d, value=%d\n", mappings[m_idx].name, ev.code, ev.value);
 
-                        uint32_t event_timestamp =
-                            (uint32_t)(now_ms() & 0xFFFFFFFF);
-
-                        int send_count =
-                            (ev.value == 0 || ev.value == 1)
-                                ? edge_repeat_count
-                                : 1;
-
-                        for (int repeat = 0; repeat < send_count; repeat++) {
-                            pkt.header       = PKT_MAKE_HEADER(PACKET_FORMAT_VERSION);
-                            pkt.timestamp_ms = htonl(event_timestamp);
-                            pkt.key_code     = htons((uint16_t)ev.code);
-                            pkt.scan_code    = htonl(mappings[m_idx].pending_scan_code);
-                            pkt.value        = (int8_t)ev.value;
-
-                            if (log_level >= LEVEL_TRACE) {
-                                char hex[sizeof(pkt) * 3 + 1];
-                                hex_bytes(&pkt, sizeof(pkt), hex);
-                                LOG_TRACE("Sending packet (%zu bytes): buf=[%s]\n",
-                                    sizeof(pkt), hex);
-                            }
-                            ssize_t sent = sendto(sock,
-                                                  &pkt, sizeof(pkt), 0,
-                                                  (struct sockaddr *)&mappings[m_idx].server_addr,
-                                                  sizeof(struct sockaddr_in));
-                            if (sent < 0) {
-                                LOG_ERROR("Failed to send UDP packet: %s\n", strerror(errno));
-                            } else {
-                                LOG_TRACE("Sent UDP packet for key %d, value %d to %s:%d\n",
-                                    ev.code, ev.value,
-                                    inet_ntoa(mappings[m_idx].server_addr.sin_addr),
-                                    ntohs(mappings[m_idx].server_addr.sin_port));
-                            }
-                        }
+                        send_key_packet(sock, &mappings[m_idx], ev.code,
+                                        mappings[m_idx].pending_scan_code, ev.value);
 
                         /* Only clear the scan code when key is released (value == 0) */
                         if (ev.value == 0) {
@@ -553,6 +733,17 @@ int main(int argc, char *argv[]) {
                         }
                     }
                 }
+            }
+        }
+
+        /* ---- hidraw app-button reports ---- */
+        for (int i = hid_start; i < nfds; i++) {
+            Mapping *m = &mappings[hid_indices[i - hid_start]];
+            if (fds[i].revents & (POLLHUP | POLLERR | POLLNVAL)) {
+                LOG_INFO("hidraw %s for \"%s\" disconnected (POLLHUP/POLLERR)\n", m->hid_path, m->name);
+                close_hidraw(m);
+            } else if (fds[i].revents & POLLIN) {
+                handle_hidraw(sock, m);
             }
         }
 
@@ -565,6 +756,21 @@ int main(int argc, char *argv[]) {
             } else {
                 for (char *p = buf; p < buf + len; ) {
                     struct inotify_event *ie = (struct inotify_event *)p;
+
+                    if (ie->len && strncmp(ie->name, "hidraw", 6) == 0) {
+                        char path[256];
+                        snprintf(path, sizeof(path), "/dev/%s", ie->name);
+
+                        if (ie->mask & IN_DELETE) {
+                            for (int i = 0; i < num_mappings; i++) {
+                                if (mappings[i].hidfd >= 0 && strcmp(path, mappings[i].hid_path) == 0) {
+                                    LOG_INFO("hidraw %s for \"%s\" removed (inotify)\n", path, mappings[i].name);
+                                    close_hidraw(&mappings[i]);
+                                }
+                            }
+                        }
+                        if (ie->mask & (IN_CREATE | IN_ATTRIB | IN_MOVED_TO)) attach_hidraw();
+                    }
 
                     if (ie->len && strncmp(ie->name, "event", 5) == 0) {
                         char path[256];
@@ -598,9 +804,11 @@ int main(int argc, char *argv[]) {
 
                     p += sizeof(*ie) + ie->len;
                 }
+                attach_hidraw();
             }
         }
     }
 
     return 0;
 }
+#endif /* REMOTE_BRIDGE_TEST */
