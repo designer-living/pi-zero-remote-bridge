@@ -7,15 +7,19 @@ CFLAGS ?= -O3 -Wall -Wextra
 TARGET = remote_bridge
 SOURCE = remote_bridge.c
 
-.PHONY: all clean install uninstall
+.PHONY: all clean test install uninstall
 
 all: $(TARGET)
 
 $(TARGET): $(SOURCE)
 	$(CC) $(CFLAGS) $(DEFS) -o $(TARGET) $(SOURCE)
 
+test: tests/test_hidraw.c $(SOURCE)
+	$(CC) $(CFLAGS) -Wno-unused-function $(DEFS) -o tests/test_hidraw tests/test_hidraw.c
+	./tests/test_hidraw
+
 clean:
-	rm -f $(TARGET)
+	rm -f $(TARGET) tests/test_hidraw
 
 install: $(TARGET)
 	@echo "Installing remote_bridge..."
