@@ -2,10 +2,10 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** For remotes with a configured voice profile, the bridge opens the remote's mic while the voice button is held. It forwards each audio frame to the gateway as a v3 UDP voice packet, and stops sending that button as an ordinary key.
+**Goal:** For remotes with a configured voice profile, the bridge opens the remote's mic while the voice button is held. It forwards each audio frame to the gateway as a UDP voice packet on a dedicated voice port, and stops sending that button as an ordinary key.
 
 **Architecture:**
-- The protocol logic goes in a new `voice.c`/`voice.h`: a profile table, v3 packet builders, and the hidraw lookup. It's pure functions, so it can be unit-tested on the build host.
+- The protocol logic goes in a new `voice.c`/`voice.h`: a profile table, voice packet builders, and the hidraw lookup. It's pure functions, so it can be unit-tested on the build host.
 - `remote_bridge.c` gets three additions for each voice-enabled mapping:
   - a hidraw fd in the `poll()` set;
   - mic on/off writes on trigger-key down/up;
@@ -20,7 +20,7 @@
 
 ## Global Constraints
 
-- **Wire format v3**, big-endian, sent to the same `REMOTE` ip:port as key packets. Byte 0 is `0x30` (version 3 in the upper nibble).
+- **Voice wire format**, big-endian, sent to the remote's `REMOTE` IP on the **voice port** given in its `VOICE=` line (never the key port). Byte 0 is the version, `0x01`.
   - Common header (10 bytes): `header u8`, `msg_type u8`, `session_id u16`, `seq u16`, `timestamp_ms u32`.
   - START, `msg_type` 1: then `codec u8`, `trigger_key u16`. 13 bytes in total.
   - AUDIO, `msg_type` 2: then `codec u8`, then the frame exactly as the remote sent it, without the report-ID byte.
@@ -51,7 +51,7 @@
 
 ---
 
-### Task 1: `voice.c` — profiles and v3 packet builders, with unit tests
+### Task 1: `voice.c` — profiles and voice packet builders, with unit tests
 
 **Files:**
 - Create: `voice.h`, `voice.c`
@@ -66,7 +66,7 @@
 - Produces, in `voice.h`:
 
 ```c
-#define VOICE_PKT_VERSION 3
+#define VOICE_PKT_VERSION 1
 enum { VOICE_MSG_START = 1, VOICE_MSG_AUDIO = 2, VOICE_MSG_END = 3 };
 enum { VOICE_CODEC_OPUS = 1 };
 enum { VOICE_END_RELEASED = 0, VOICE_END_TIMEOUT = 1, VOICE_END_DISCONNECTED = 2 };
@@ -98,10 +98,10 @@ These are plain `assert`s in `main()`, printing `"all voice tests passed"`.
 ```c
 test_firetv_profile_values();      /* trigger 217, mic_on F2 01, mic_off F2 00, audio id 0xF0, codec 1 */
 test_unknown_profile_is_null();
-test_build_start_layout();         /* 30 01 sid seq=0000 ts(4) 01 00D9 -> 13 bytes, big-endian */
-test_build_audio_layout();         /* 30 02 sid seq ts 01 + frame; returns 11+frame_len */
+test_build_start_layout();         /* 01 01 sid seq=0000 ts(4) 01 00D9 -> 13 bytes, big-endian */
+test_build_audio_layout();         /* 01 02 sid seq ts 01 + frame; returns 11+frame_len */
 test_build_audio_too_big_returns_0();
-test_build_end_layout();           /* 30 03 sid seq ts reason -> 11 bytes */
+test_build_end_layout();           /* 01 03 sid seq ts reason -> 11 bytes */
 test_audio_payload_strips_report_id();      /* F0 + 80 bytes -> ptr to byte 1, len 80 */
 test_audio_payload_ignores_other_report_ids();   /* 02 21 02 00 00 -> NULL (Review Focus 4) */
 ```
@@ -124,7 +124,7 @@ Expected: `all voice tests passed`, and `remote_bridge` builds with no warnings 
 
 ```bash
 git add voice.h voice.c tests/test_voice.c Makefile .github/workflows/build.yml .gitignore
-git commit -m "feat(voice): profile table and v3 voice packet builders"
+git commit -m "feat(voice): profile table and voice packet builders"
 ```
 
 ---
@@ -135,9 +135,10 @@ git commit -m "feat(voice): profile table and v3 voice packet builders"
 - Modify: `voice.c` / `voice.h` (add discovery)
 - Modify: `remote_bridge.c`:
   - `Mapping` gets `const VoiceProfile *voice; int hidfd; int mic_open; uint16_t sid; uint16_t seq; uint64_t mic_opened_ms;`;
-  - `load_config` parses `VOICE=<exact_remote_name>,<profile>`, which applies to every mapping with that name; an unknown profile name logs an ERROR and is ignored;
+  - `Mapping` also gets `struct sockaddr_in voice_addr`: the mapping's server IP with the voice port;
+  - `load_config` parses `VOICE=<exact_remote_name>,<profile>,<voice_port>`, which applies to every mapping with that name. An unknown profile name, or a missing or invalid port, logs an ERROR and the line is ignored. Process `VOICE=` lines after all `REMOTE=` lines, so their order in the file doesn't matter;
   - initialise `hidfd = -1` in `add_mapping`.
-- Modify: `remote-bridge.conf`: document `VOICE=`, with a commented example `# VOICE="AR,firetv"`.
+- Modify: `remote-bridge.conf`: document `VOICE=`, with a commented example `# VOICE="AR,firetv,9100"`.
 - Modify: `99-remote-bridge.rules`: add `SUBSYSTEM=="hidraw", GROUP="input", MODE="0660"`.
 - Modify: `packaging/scripts/postinstall-apk.sh`: extend the mdev note with `hidraw[0-9]+ root:input 660`, and also trigger `--subsystem-match=hidraw`. Do the same in `postinstall-deb.sh`.
 - Modify: `README.md`: a short "Voice remotes" section covering the `VOICE=` line, the hidraw permission requirement, and the `firetv` profile.
@@ -214,7 +215,7 @@ The behaviour, per mapping `m` with `m->voice != NULL`:
 - [ ] **Step 1: Implement the behaviour above**
 
 Keep the voice handling in small static helpers in `remote_bridge.c`:
-- `voice_on_key(Mapping*, int value, int sock)` returns 1 if it consumed the event;
+- `voice_on_key(Mapping*, int value, int sock)`, which sends to `m->voice_addr`, returns 1 if it consumed the event;
 - `voice_on_hidraw(Mapping*, int sock)`;
 - `voice_close(Mapping*, int sock, uint8_t reason)`;
 - `voice_next_timeout_ms(void)`.
@@ -226,7 +227,7 @@ Expected: pass, with no warnings
 
 - [ ] **Step 3: Manual hardware check on `pizero-w1-dev-1` (192.168.5.113)**
 
-1. Build an armhf apk, or `make` on the Pi with `apk add make gcc musl-dev linux-headers`. Install it, add `VOICE="AR,firetv"` to `/etc/remote-bridge.conf`, add the mdev line `hidraw[0-9]+ root:input 660`, re-trigger mdev or reboot, and persist with `lbu commit`.
+1. Build an armhf apk, or `make` on the Pi with `apk add make gcc musl-dev linux-headers`. Install it, add `VOICE="AR,firetv,9100"` to `/etc/remote-bridge.conf` (the dev remote's gateway voice input, `dev_voice_input`), add the mdev line `hidraw[0-9]+ root:input 660`, re-trigger mdev or reboot, and persist with `lbu commit`.
 2. Make sure the gateway from the companion plan is deployed and the dev input's matrix port 4 is on input 6. Hold the mic, say "Stranger Things", and let go. Expected:
    - the LED goes white;
    - the Chromecast shows the results;
@@ -240,5 +241,5 @@ Expected: pass, with no warnings
 - [ ] **Step 4: Commit and open a PR**
 
 ```bash
-git commit -am "feat(voice): forward remote mic audio as v3 voice packets"
+git commit -am "feat(voice): forward remote mic audio as voice packets"
 ```
