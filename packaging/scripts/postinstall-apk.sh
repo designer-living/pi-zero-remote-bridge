@@ -11,7 +11,7 @@ fi
 
 # Reload udev rules to pick up the new rule if udev is present
 if command -v udevadm > /dev/null 2>&1; then
-    (udevadm control --reload-rules && udevadm trigger --subsystem-match=input) || echo "Warning: Failed to reload udev rules. A reboot may be required for device permissions to apply."
+    (udevadm control --reload-rules && udevadm trigger --subsystem-match=input --subsystem-match=hidraw) || echo "Warning: Failed to reload udev rules. A reboot may be required for device permissions to apply."
 fi
 
 # Enable and restart service (restart handles upgrades better than start)
@@ -25,8 +25,11 @@ echo "  sudo rc-service remote-bridge restart"
 echo ""
 echo "Note for Alpine users: If you are not using eudev (udev),"
 echo "ensure that /dev/input/event* nodes belong to the 'input' group."
-echo "You can add a rule to /etc/mdev.conf if needed:"
+echo "You can add rules to /etc/mdev.conf if needed (hidraw is required"
+echo "for the Fire TV app buttons - Netflix etc.):"
 echo "  event[0-9]+ root:input 660"
+echo "  hidraw[0-9]+ root:input 660"
+echo "then reboot or re-plug the remote."
 echo ""
 echo "Follow logs:"
 echo "  tail -f /var/log/remote-bridge.log"
