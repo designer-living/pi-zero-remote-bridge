@@ -44,6 +44,7 @@ static int inotify_add_watch(int fd, const char *pathname, uint32_t mask) { (voi
 #include <sys/ioctl.h>
 #include <poll.h>
 #include <time.h>
+#include "voice.h"
 #include <stdarg.h>
 
 #ifndef VERSION
@@ -214,6 +215,14 @@ typedef struct {
     int hidfd;              /* hidraw node of the same remote (vendor app buttons), or -1 */
     char hid_path[256];
     uint8_t hid_prev[HID_APP_CODES];
+    /* Voice capture (only when a VOICE= line names this remote) */
+    const VoiceProfile *voice;      /* NULL = voice off: trigger key is a normal key */
+    struct sockaddr_in voice_addr;  /* server IP with the voice port */
+    int voice_hidfd;                      /* the remote's /dev/hidrawN, -1 if not open */
+    int mic_open;
+    uint16_t sid;
+    uint16_t seq;
+    uint64_t mic_opened_ms;
 } Mapping;
 
 static Mapping mappings[MAX_MAPPINGS];
@@ -240,6 +249,9 @@ static int add_mapping(const char *name, const char *ip, int port, const char *i
     m->hidfd = -1;
     m->hid_path[0] = '\0';
     memset(m->hid_prev, 0, sizeof(m->hid_prev));
+    m->voice = NULL;
+    m->voice_hidfd = -1;
+    m->mic_open = 0;
 
     memset(&m->server_addr, 0, sizeof(m->server_addr));
     m->server_addr.sin_family = AF_INET;
@@ -435,6 +447,34 @@ static void handle_hidraw(int sock, Mapping *m) {
     }
 }
 
+/* VOICE=<exact_remote_name>,<profile>,<voice_port>: applies to every mapping
+ * with that name; voice packets go to the mapping's server IP on voice_port. */
+static void apply_voice_line(const char *val) {
+    char name[MAX_NAME], profile[64];
+    int port;
+    if (sscanf(val, " %255[^,] , %63[^, ] , %d", name, profile, &port) != 3 || port <= 0 || port > 65535) {
+        LOG_ERROR("Invalid VOICE line (want VOICE=<remote name>,<profile>,<voice port>): %s\n", val);
+        return;
+    }
+    size_t n_len = strlen(name);
+    while (n_len > 0 && (name[n_len - 1] == ' ' || name[n_len - 1] == '\t')) name[--n_len] = '\0';
+    const VoiceProfile *vp = voice_profile_find(profile);
+    if (!vp) {
+        LOG_ERROR("Unknown voice profile \"%s\" in VOICE line: %s\n", profile, val);
+        return;
+    }
+    int matched = 0;
+    for (int i = 0; i < num_mappings; i++) {
+        if (strcmp(mappings[i].name, name) != 0) continue;
+        mappings[i].voice = vp;
+        mappings[i].voice_addr = mappings[i].server_addr;
+        mappings[i].voice_addr.sin_port = htons((uint16_t)port);
+        matched++;
+        LOG_DEBUG("Voice enabled: Remote=\"%s\", profile=%s, voice port=%d\n", name, vp->name, port);
+    }
+    if (!matched) LOG_ERROR("VOICE line names no configured REMOTE: %s\n", val);
+}
+
 static int load_config(const char *filename) {
     FILE *f = fopen(filename, "r");
     if (!f) {
@@ -443,6 +483,9 @@ static int load_config(const char *filename) {
     }
 
     char line[512];
+    /* VOICE= lines are applied after every REMOTE= line, so order in the file doesn't matter. */
+    static char voice_lines[MAX_MAPPINGS][512];
+    int num_voice_lines = 0;
     while (fgets(line, sizeof(line), f)) {
         char *p = line;
         while (*p == ' ' || *p == '\t') p++;
@@ -489,6 +532,14 @@ static int load_config(const char *filename) {
         } else if (strcasecmp(key, "EDGE_REPEAT_COUNT") == 0) {
             edge_repeat_count = atoi(val);
             if (edge_repeat_count < 1) edge_repeat_count = 1;
+        } else if (strcasecmp(key, "VOICE") == 0) {
+            if (num_voice_lines < MAX_MAPPINGS) {
+                strncpy(voice_lines[num_voice_lines], val, sizeof(voice_lines[0]) - 1);
+                voice_lines[num_voice_lines][sizeof(voice_lines[0]) - 1] = '\0';
+                num_voice_lines++;
+            } else {
+                LOG_ERROR("Too many VOICE lines (max %d)\n", MAX_MAPPINGS);
+            }
         } else if (strcasecmp(key, "REMOTE") == 0) {
             char name[MAX_NAME], ip[64], id[64] = {0};
             int port;
@@ -532,10 +583,33 @@ static int load_config(const char *filename) {
         }
     }
     fclose(f);
+    for (int i = 0; i < num_voice_lines; i++) apply_voice_line(voice_lines[i]);
     return 0;
 }
 
 #ifndef REMOTE_BRIDGE_TEST
+
+/* Open the hidraw node of a voice-enabled mapping's matched evdev device.
+ * Failure leaves voice_hidfd = -1, and the trigger key then behaves as a normal key. */
+static void voice_open_hidraw(Mapping *m) {
+    if (!m->voice || m->voice_hidfd >= 0 || m->dev_path[0] == '\0') return;
+    const char *event_name = strrchr(m->dev_path, '/');
+    event_name = event_name ? event_name + 1 : m->dev_path;
+    char hid_path[64];
+    if (voice_find_hidraw_for_event("/sys", event_name, hid_path, sizeof(hid_path)) != 0) {
+        LOG_ERROR("Voice: no hidraw node found for \"%s\" (%s); voice button will be sent as a normal key\n",
+            m->name, m->dev_path);
+        return;
+    }
+    m->voice_hidfd = open(hid_path, O_RDWR | O_NONBLOCK);
+    if (m->voice_hidfd < 0) {
+        LOG_ERROR("Voice: cannot open %s for \"%s\": %s (check hidraw permissions); voice button will be sent as a normal key\n",
+            hid_path, m->name, strerror(errno));
+        return;
+    }
+    LOG_INFO("Voice: \"%s\" using %s (profile %s)\n", m->name, hid_path, m->voice->name);
+}
+
 /* -------- Main -------- */
 int main(int argc, char *argv[]) {
     if (argc >= 3 && strcmp(argv[1], "-c") == 0) {
@@ -623,6 +697,7 @@ int main(int argc, char *argv[]) {
                     mappings[m_idx].evfd = fd;
                     strncpy(mappings[m_idx].dev_path, path, sizeof(mappings[m_idx].dev_path) - 1);
                     mappings[m_idx].dev_path[sizeof(mappings[m_idx].dev_path) - 1] = '\0';
+                    voice_open_hidraw(&mappings[m_idx]);
                 } else {
                     close(fd);
                 }
@@ -795,6 +870,7 @@ int main(int argc, char *argv[]) {
                                     mappings[m_idx].evfd = fd;
                                     strncpy(mappings[m_idx].dev_path, path, sizeof(mappings[m_idx].dev_path) - 1);
                                     mappings[m_idx].dev_path[sizeof(mappings[m_idx].dev_path) - 1] = '\0';
+                                    voice_open_hidraw(&mappings[m_idx]);
                                 } else {
                                     close(fd);
                                 }

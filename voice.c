@@ -1,6 +1,9 @@
 #include "voice.h"
 
+#include <dirent.h>
+#include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
 
 /* -------- Voice profiles -------- */
 static const VoiceProfile profiles[] = {
@@ -73,4 +76,41 @@ const uint8_t *voice_audio_payload(const VoiceProfile *p, const uint8_t *report,
     if (!p || !report || len < 2 || report[0] != p->audio_report_id) return NULL;
     *out_len = len - 1;
     return report + 1;
+}
+
+/* -------- hidraw discovery -------- */
+static int input_dir_has_event(const char *input_root, const char *event_name) {
+    DIR *d = opendir(input_root);
+    if (!d) return 0;
+    struct dirent *ent;
+    int found = 0;
+    while (!found && (ent = readdir(d))) {
+        if (strncmp(ent->d_name, "input", 5) != 0) continue;
+        char path[1200];  /* input_root + / + d_name + / + event_name */
+        struct stat st;
+        snprintf(path, sizeof(path), "%s/%s/%s", input_root, ent->d_name, event_name);
+        if (stat(path, &st) == 0) found = 1;
+    }
+    closedir(d);
+    return found;
+}
+
+int voice_find_hidraw_for_event(const char *sysfs_root, const char *event_name, char *out_path, size_t cap) {
+    char class_dir[256];
+    snprintf(class_dir, sizeof(class_dir), "%s/class/hidraw", sysfs_root);
+    DIR *d = opendir(class_dir);
+    if (!d) return -1;
+    struct dirent *ent;
+    int rc = -1;
+    while (rc != 0 && (ent = readdir(d))) {
+        if (strncmp(ent->d_name, "hidraw", 6) != 0) continue;
+        char input_root[600];  /* class_dir + / + d_name + /device/input */
+        snprintf(input_root, sizeof(input_root), "%s/%s/device/input", class_dir, ent->d_name);
+        if (input_dir_has_event(input_root, event_name)) {
+            snprintf(out_path, cap, "/dev/%s", ent->d_name);
+            rc = 0;
+        }
+    }
+    closedir(d);
+    return rc;
 }

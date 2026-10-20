@@ -37,4 +37,10 @@ size_t voice_build_end(uint8_t *buf, uint16_t sid, uint16_t seq, uint32_t ts, ui
 /* Returns the payload pointer/len if report is an audio report for profile, else NULL. */
 const uint8_t *voice_audio_payload(const VoiceProfile *p, const uint8_t *report, size_t len, size_t *out_len);
 
+/* Find the hidraw node belonging to the same HID device as evdev node
+ * `event_name` (e.g. "event0") by scanning
+ * <sysfs_root>/class/hidraw/hidrawN/device/input/inputM/<event_name>.
+ * On a match writes "/dev/hidrawN" to out_path and returns 0; else -1. */
+int voice_find_hidraw_for_event(const char *sysfs_root, const char *event_name, char *out_path, size_t cap);
+
 #endif

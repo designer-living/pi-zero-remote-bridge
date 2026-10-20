@@ -2,7 +2,10 @@
  * Plain asserts; run with `make test`. */
 #include <assert.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include "../voice.h"
 
@@ -76,6 +79,44 @@ static void test_audio_payload_ignores_other_report_ids(void) {
     assert(voice_audio_payload(p, id_only, sizeof(id_only), &len) == NULL);
 }
 
+
+/* Build <root>/class/hidraw/<hid>/device/input/<input>/<event> as a fake sysfs tree. */
+static void make_tree(const char *root, const char *hid, const char *input, const char *event) {
+    char path[512];
+    const char *parts[] = {"class", "hidraw", hid, "device", "input", input, event};
+    snprintf(path, sizeof(path), "%s", root);
+    for (size_t i = 0; i < sizeof(parts) / sizeof(parts[0]); i++) {
+        strncat(path, "/", sizeof(path) - strlen(path) - 1);
+        strncat(path, parts[i], sizeof(path) - strlen(path) - 1);
+        mkdir(path, 0755);
+    }
+}
+
+static void test_find_hidraw_for_event_matches_sibling(void) {
+    char root[] = "/tmp/voice_sysfs_XXXXXX";
+    assert(mkdtemp(root) != NULL);
+    make_tree(root, "hidraw1", "input0", "event2");
+    make_tree(root, "hidraw3", "input1", "event7");
+    char out[64] = {0};
+    assert(voice_find_hidraw_for_event(root, "event7", out, sizeof(out)) == 0);
+    assert(strcmp(out, "/dev/hidraw3") == 0);
+    char cmd[600];
+    snprintf(cmd, sizeof(cmd), "rm -rf %s", root);
+    assert(system(cmd) == 0);
+}
+
+static void test_find_hidraw_for_event_returns_minus1_when_missing(void) {
+    char root[] = "/tmp/voice_sysfs_XXXXXX";
+    assert(mkdtemp(root) != NULL);
+    make_tree(root, "hidraw0", "input0", "event0");
+    char out[64] = {0};
+    assert(voice_find_hidraw_for_event(root, "event9", out, sizeof(out)) == -1);
+    assert(voice_find_hidraw_for_event("/nonexistent_sysfs_root", "event0", out, sizeof(out)) == -1);
+    char cmd[600];
+    snprintf(cmd, sizeof(cmd), "rm -rf %s", root);
+    assert(system(cmd) == 0);
+}
+
 int main(void) {
     test_firetv_profile_values();
     test_unknown_profile_is_null();
@@ -85,6 +126,8 @@ int main(void) {
     test_build_end_layout();
     test_audio_payload_strips_report_id();
     test_audio_payload_ignores_other_report_ids();
+    test_find_hidraw_for_event_matches_sibling();
+    test_find_hidraw_for_event_returns_minus1_when_missing();
     printf("all voice tests passed\n");
     return 0;
 }

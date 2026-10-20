@@ -15,8 +15,8 @@ all: $(TARGET)
 $(TARGET): $(SOURCE) voice.h
 	$(CC) $(CFLAGS) $(DEFS) -o $(TARGET) $(SOURCE)
 
-test: tests/test_hidraw.c $(SOURCE) $(TEST_BIN)
-	$(CC) $(CFLAGS) -Wno-unused-function $(DEFS) -o tests/test_hidraw tests/test_hidraw.c
+test: tests/test_hidraw.c $(SOURCE) voice.h $(TEST_BIN)
+	$(CC) $(CFLAGS) -Wno-unused-function $(DEFS) -o tests/test_hidraw tests/test_hidraw.c voice.c
 	./tests/test_hidraw
 	./$(TEST_BIN)
 
