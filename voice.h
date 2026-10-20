@@ -43,4 +43,10 @@ const uint8_t *voice_audio_payload(const VoiceProfile *p, const uint8_t *report,
  * On a match writes "/dev/hidrawN" to out_path and returns 0; else -1. */
 int voice_find_hidraw_for_event(const char *sysfs_root, const char *event_name, char *out_path, size_t cap);
 
+/* What to do with a voice-trigger key event (value 0=up, 1=down, 2=repeat).
+ * voice_owned: this press's down was taken by voice. hid_ready: hidraw open.
+ * A press is either all voice or all normal key, so a down and its up never split. */
+typedef enum { VOICE_KEY_PASS, VOICE_KEY_START, VOICE_KEY_SWALLOW, VOICE_KEY_END } VoiceKeyAction;
+VoiceKeyAction voice_key_action(int value, int voice_owned, int hid_ready);
+
 #endif

@@ -224,6 +224,8 @@ typedef struct {
     uint16_t seq;
     uint64_t mic_opened_ms;
     uint32_t frames;
+    int voice_owned;                /* current press's down was taken by voice */
+    int hid_err_logged;             /* hidraw lookup/open error already logged this connect */
 } Mapping;
 
 static Mapping mappings[MAX_MAPPINGS];
@@ -253,6 +255,8 @@ static int add_mapping(const char *name, const char *ip, int port, const char *i
     m->voice = NULL;
     m->voice_hidfd = -1;
     m->mic_open = 0;
+    m->voice_owned = 0;
+    m->hid_err_logged = 0;
 
     memset(&m->server_addr, 0, sizeof(m->server_addr));
     m->server_addr.sin_family = AF_INET;
@@ -598,12 +602,16 @@ static void voice_open_hidraw(Mapping *m) {
     event_name = event_name ? event_name + 1 : m->dev_path;
     char hid_path[64];
     if (voice_find_hidraw_for_event("/sys", event_name, hid_path, sizeof(hid_path)) != 0) {
+        if (m->hid_err_logged) return;
+        m->hid_err_logged = 1;
         LOG_ERROR("Voice: no hidraw node found for \"%s\" (%s); voice button will be sent as a normal key\n",
             m->name, m->dev_path);
         return;
     }
     m->voice_hidfd = open(hid_path, O_RDWR | O_NONBLOCK);
     if (m->voice_hidfd < 0) {
+        if (m->hid_err_logged) return;
+        m->hid_err_logged = 1;
         LOG_ERROR("Voice: cannot open %s for \"%s\": %s (check hidraw permissions); voice button will be sent as a normal key\n",
             hid_path, m->name, strerror(errno));
         return;
@@ -659,11 +667,14 @@ static void voice_close(Mapping *m, int sock, uint8_t reason) {
 /* Handle the voice trigger key. Returns 1 if consumed (no key packet sent). */
 static int voice_on_key(Mapping *m, int value, int sock) {
     if (!m->voice) return 0;
-    if (m->voice_hidfd < 0) voice_open_hidraw(m);   /* hidraw may appear after evdev */
-    if (m->voice_hidfd < 0) return 0;               /* fall back to a normal key */
+    /* Retry the hidraw lookup only on a fresh press: hidraw may appear after evdev. */
+    if (value == 1 && !m->voice_owned && m->voice_hidfd < 0) voice_open_hidraw(m);
 
-    if (value == 1) {
-        if (m->mic_open) return 1;
+    switch (voice_key_action(value, m->voice_owned, m->voice_hidfd >= 0)) {
+    case VOICE_KEY_PASS:
+        return 0;
+    case VOICE_KEY_START: {
+        m->voice_owned = 1;
         voice_hid_write(m, m->voice->mic_on, m->voice->mic_on_len);
         m->mic_open = 1;
         m->seq = 0;
@@ -675,11 +686,16 @@ static int voice_on_key(Mapping *m, int value, int sock) {
                                        m->voice->codec, m->voice->trigger_key);
         voice_send(m, sock, buf, len, edge_repeat_count);
         LOG_INFO("Voice start (%s): sid=%u\n", m->name, m->sid);
-    } else if (value == 0) {
-        voice_mic_close(m, sock, VOICE_END_RELEASED);   /* no-op after the cap fired */
+        return 1;
     }
-    /* value 2 (repeat): ignored */
-    return 1;
+    case VOICE_KEY_END:
+        voice_mic_close(m, sock, VOICE_END_RELEASED);   /* no-op after the cap or a hidraw loss */
+        m->voice_owned = 0;
+        return 1;
+    case VOICE_KEY_SWALLOW:
+    default:
+        return 1;
+    }
 }
 
 /* Read pending hidraw reports; forward audio frames while the mic is open. */
@@ -819,6 +835,8 @@ int main(int argc, char *argv[]) {
                     mappings[m_idx].evfd = fd;
                     strncpy(mappings[m_idx].dev_path, path, sizeof(mappings[m_idx].dev_path) - 1);
                     mappings[m_idx].dev_path[sizeof(mappings[m_idx].dev_path) - 1] = '\0';
+                    mappings[m_idx].hid_err_logged = 0;
+                    mappings[m_idx].voice_owned = 0;
                     voice_open_hidraw(&mappings[m_idx]);
                 } else {
                     close(fd);
@@ -1029,6 +1047,8 @@ int main(int argc, char *argv[]) {
                                     mappings[m_idx].evfd = fd;
                                     strncpy(mappings[m_idx].dev_path, path, sizeof(mappings[m_idx].dev_path) - 1);
                                     mappings[m_idx].dev_path[sizeof(mappings[m_idx].dev_path) - 1] = '\0';
+                                    mappings[m_idx].hid_err_logged = 0;
+                                    mappings[m_idx].voice_owned = 0;
                                     voice_open_hidraw(&mappings[m_idx]);
                                 } else {
                                     close(fd);

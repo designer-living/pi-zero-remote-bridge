@@ -117,6 +117,26 @@ static void test_find_hidraw_for_event_returns_minus1_when_missing(void) {
     assert(system(cmd) == 0);
 }
 
+static void test_key_action_press_with_hidraw_starts_voice(void) {
+    assert(voice_key_action(1, 0, 1) == VOICE_KEY_START);
+    assert(voice_key_action(2, 1, 1) == VOICE_KEY_SWALLOW);
+    assert(voice_key_action(0, 1, 1) == VOICE_KEY_END);
+}
+
+static void test_key_action_press_without_hidraw_passes_whole_press(void) {
+    /* Down fell back to a normal key: the matching repeat/up must also be
+     * normal keys, even if hidraw has appeared meanwhile (no stuck key). */
+    assert(voice_key_action(1, 0, 0) == VOICE_KEY_PASS);
+    assert(voice_key_action(2, 0, 1) == VOICE_KEY_PASS);
+    assert(voice_key_action(0, 0, 1) == VOICE_KEY_PASS);
+}
+
+static void test_key_action_owned_press_stays_voice_after_hidraw_loss(void) {
+    /* hidraw hung up mid-hold: voice owned the down, so repeat/up stay swallowed. */
+    assert(voice_key_action(2, 1, 0) == VOICE_KEY_SWALLOW);
+    assert(voice_key_action(0, 1, 0) == VOICE_KEY_END);
+}
+
 int main(void) {
     test_firetv_profile_values();
     test_unknown_profile_is_null();
@@ -128,6 +148,9 @@ int main(void) {
     test_audio_payload_ignores_other_report_ids();
     test_find_hidraw_for_event_matches_sibling();
     test_find_hidraw_for_event_returns_minus1_when_missing();
+    test_key_action_press_with_hidraw_starts_voice();
+    test_key_action_press_without_hidraw_passes_whole_press();
+    test_key_action_owned_press_stays_voice_after_hidraw_loss();
     printf("all voice tests passed\n");
     return 0;
 }
