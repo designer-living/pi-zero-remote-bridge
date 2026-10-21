@@ -147,12 +147,12 @@ static const char* level_to_str(int level) {
 
 #define MAX_MAPPINGS 32
 
-/* Fire TV remote ("AR", Bluetooth HID): its Netflix / Amazon Video / App /
- * Amazon Music buttons never reach evdev. They only arrive as vendor-page
- * (0xFF00) input report 0xEF on the hidraw node: <0xEF> <code> <code> <code>,
- * a keyboard-style array of up to 3 held codes, all zero when released. */
+/* Fire TV remotes ("AR", Bluetooth HID, 0171:041E or 0171:0418): their
+ * Netflix / Amazon Video / App / Amazon Music buttons never reach evdev. They
+ * only arrive as vendor-page (0xFF00) input report 0xEF on the hidraw node:
+ * <0xEF> <code> <code> <code>, a keyboard-style array of up to 3 held codes,
+ * all zero when released. */
 #define HID_VENDOR_ID           0x0171
-#define HID_PRODUCT_ID          0x041E
 #define HID_APP_REPORT_ID       0xEF
 #define HID_APP_CODES           3
 #define HID_APP_SCAN_BASE       0xFF0000u   /* scan code = base | code; 0xFF00 page can't collide with consumer-page 0xc00xx */
@@ -355,6 +355,15 @@ static void send_key_packet(int sock, Mapping *m, uint16_t key_code, uint32_t sc
     }
 }
 
+static const unsigned hid_product_ids[] = { 0x041E, 0x0418 };
+
+static int is_fire_tv_remote(unsigned vid, unsigned pid) {
+    if (vid != HID_VENDOR_ID) return 0;
+    for (size_t i = 0; i < sizeof(hid_product_ids) / sizeof(hid_product_ids[0]); i++)
+        if (pid == hid_product_ids[i]) return 1;
+    return 0;
+}
+
 static void close_hidraw(Mapping *m) {
     if (m->hidfd >= 0) close(m->hidfd);
     m->hidfd = -1;
@@ -388,7 +397,7 @@ static int find_hidraw_path(const char *uniq, char *path, size_t path_len) {
         }
         fclose(f);
 
-        if (vid != HID_VENDOR_ID || pid != HID_PRODUCT_ID) continue;
+        if (!is_fire_tv_remote(vid, pid)) continue;
         if (uniq[0] == '\0' || strcasecmp(uniq, hid_uniq) != 0) continue;
 
         char candidate[256];
