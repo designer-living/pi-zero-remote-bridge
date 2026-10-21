@@ -147,7 +147,7 @@ static const char* level_to_str(int level) {
 
 #define MAX_MAPPINGS 32
 
-/* Fire TV remotes ("AR", Bluetooth HID, 0171:041E or 0171:0418): their
+/* Fire TV remotes (Bluetooth HID, 0171:041E, 0171:0418 or 0171:0427): their
  * Netflix / Amazon Video / App / Amazon Music buttons never reach evdev. They
  * only arrive as vendor-page (0xFF00) input report 0xEF on the hidraw node:
  * <0xEF> <code> <code> <code>, a keyboard-style array of up to 3 held codes,
@@ -355,7 +355,7 @@ static void send_key_packet(int sock, Mapping *m, uint16_t key_code, uint32_t sc
     }
 }
 
-static const unsigned hid_product_ids[] = { 0x041E, 0x0418 };
+static const unsigned hid_product_ids[] = { 0x041E, 0x0418, 0x0427 };
 
 static int is_fire_tv_remote(unsigned vid, unsigned pid) {
     if (vid != HID_VENDOR_ID) return 0;

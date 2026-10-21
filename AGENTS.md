@@ -101,7 +101,7 @@ libc). The flow:
    builds a `struct Packet` (consuming and clearing `pending_scan_code`) and
    `sendto()`s it to that mapping's server.
    **Fire TV remote app buttons** (Netflix, Amazon Video, App Button, Amazon
-   Music) never reach evdev: the remote ("AR", 0171:041E or 0171:0418) sends them only as
+   Music) never reach evdev: the remote (0171:041E, 0171:0418 or 0171:0427) sends them only as
    vendor-page input report `0xEF` on its `/dev/hidraw*` node. After an
    evdev match, `attach_hidraw()` finds the hidraw node by VID/PID and
    `HID_UNIQ` (== the evdev `uniq`) in `/sys/class/hidraw`, opens it
