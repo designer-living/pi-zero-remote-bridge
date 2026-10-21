@@ -44,6 +44,7 @@ static int inotify_add_watch(int fd, const char *pathname, uint32_t mask) { (voi
 #include <sys/ioctl.h>
 #include <poll.h>
 #include <time.h>
+#include "voice.h"
 #include <stdarg.h>
 
 #ifndef VERSION
@@ -214,6 +215,16 @@ typedef struct {
     int hidfd;              /* hidraw node of the same remote (vendor app buttons), or -1 */
     char hid_path[256];
     uint8_t hid_prev[HID_APP_CODES];
+    /* Voice capture (only when a VOICE= line names this remote) */
+    const VoiceProfile *voice;      /* NULL = voice off: trigger key is a normal key */
+    struct sockaddr_in voice_addr;  /* server IP with the voice port */
+    int voice_hidfd;                      /* the remote's /dev/hidrawN, -1 if not open */
+    int mic_open;
+    uint16_t sid;
+    uint16_t seq;
+    uint64_t mic_opened_ms;
+    uint32_t frames;
+    int hid_err_logged;             /* hidraw lookup/open error already logged this connect */
 } Mapping;
 
 static Mapping mappings[MAX_MAPPINGS];
@@ -240,6 +251,10 @@ static int add_mapping(const char *name, const char *ip, int port, const char *i
     m->hidfd = -1;
     m->hid_path[0] = '\0';
     memset(m->hid_prev, 0, sizeof(m->hid_prev));
+    m->voice = NULL;
+    m->voice_hidfd = -1;
+    m->mic_open = 0;
+    m->hid_err_logged = 0;
 
     memset(&m->server_addr, 0, sizeof(m->server_addr));
     m->server_addr.sin_family = AF_INET;
@@ -435,6 +450,34 @@ static void handle_hidraw(int sock, Mapping *m) {
     }
 }
 
+/* VOICE=<exact_remote_name>,<profile>,<voice_port>: applies to every mapping
+ * with that name; voice packets go to the mapping's server IP on voice_port. */
+static void apply_voice_line(const char *val) {
+    char name[MAX_NAME], profile[64];
+    int port;
+    if (sscanf(val, " %255[^,] , %63[^, ] , %d", name, profile, &port) != 3 || port <= 0 || port > 65535) {
+        LOG_ERROR("Invalid VOICE line (want VOICE=<remote name>,<profile>,<voice port>): %s\n", val);
+        return;
+    }
+    size_t n_len = strlen(name);
+    while (n_len > 0 && (name[n_len - 1] == ' ' || name[n_len - 1] == '\t')) name[--n_len] = '\0';
+    const VoiceProfile *vp = voice_profile_find(profile);
+    if (!vp) {
+        LOG_ERROR("Unknown voice profile \"%s\" in VOICE line: %s\n", profile, val);
+        return;
+    }
+    int matched = 0;
+    for (int i = 0; i < num_mappings; i++) {
+        if (strcmp(mappings[i].name, name) != 0) continue;
+        mappings[i].voice = vp;
+        mappings[i].voice_addr = mappings[i].server_addr;
+        mappings[i].voice_addr.sin_port = htons((uint16_t)port);
+        matched++;
+        LOG_DEBUG("Voice enabled: Remote=\"%s\", profile=%s, voice port=%d\n", name, vp->name, port);
+    }
+    if (!matched) LOG_ERROR("VOICE line names no configured REMOTE: %s\n", val);
+}
+
 static int load_config(const char *filename) {
     FILE *f = fopen(filename, "r");
     if (!f) {
@@ -443,6 +486,9 @@ static int load_config(const char *filename) {
     }
 
     char line[512];
+    /* VOICE= lines are applied after every REMOTE= line, so order in the file doesn't matter. */
+    static char voice_lines[MAX_MAPPINGS][512];
+    int num_voice_lines = 0;
     while (fgets(line, sizeof(line), f)) {
         char *p = line;
         while (*p == ' ' || *p == '\t') p++;
@@ -489,6 +535,14 @@ static int load_config(const char *filename) {
         } else if (strcasecmp(key, "EDGE_REPEAT_COUNT") == 0) {
             edge_repeat_count = atoi(val);
             if (edge_repeat_count < 1) edge_repeat_count = 1;
+        } else if (strcasecmp(key, "VOICE") == 0) {
+            if (num_voice_lines < MAX_MAPPINGS) {
+                strncpy(voice_lines[num_voice_lines], val, sizeof(voice_lines[0]) - 1);
+                voice_lines[num_voice_lines][sizeof(voice_lines[0]) - 1] = '\0';
+                num_voice_lines++;
+            } else {
+                LOG_ERROR("Too many VOICE lines (max %d)\n", MAX_MAPPINGS);
+            }
         } else if (strcasecmp(key, "REMOTE") == 0) {
             char name[MAX_NAME], ip[64], id[64] = {0};
             int port;
@@ -532,10 +586,159 @@ static int load_config(const char *filename) {
         }
     }
     fclose(f);
+    for (int i = 0; i < num_voice_lines; i++) apply_voice_line(voice_lines[i]);
     return 0;
 }
 
 #ifndef REMOTE_BRIDGE_TEST
+
+/* Open the hidraw node of a voice-enabled mapping's matched evdev device.
+ * Failure leaves voice_hidfd = -1, and the trigger key then behaves as a normal key. */
+static void voice_open_hidraw(Mapping *m) {
+    if (!m->voice || m->voice_hidfd >= 0 || m->dev_path[0] == '\0') return;
+    const char *event_name = strrchr(m->dev_path, '/');
+    event_name = event_name ? event_name + 1 : m->dev_path;
+    char hid_path[64];
+    if (voice_find_hidraw_for_event("/sys", event_name, hid_path, sizeof(hid_path)) != 0) {
+        if (m->hid_err_logged) return;
+        m->hid_err_logged = 1;
+        LOG_ERROR("Voice: no hidraw node found for \"%s\" (%s); voice button will be sent as a normal key\n",
+            m->name, m->dev_path);
+        return;
+    }
+    m->voice_hidfd = open(hid_path, O_RDWR | O_NONBLOCK);
+    if (m->voice_hidfd < 0) {
+        if (m->hid_err_logged) return;
+        m->hid_err_logged = 1;
+        LOG_ERROR("Voice: cannot open %s for \"%s\": %s (check hidraw permissions); voice button will be sent as a normal key\n",
+            hid_path, m->name, strerror(errno));
+        return;
+    }
+    LOG_INFO("Voice: \"%s\" using %s (profile %s)\n", m->name, hid_path, m->voice->name);
+}
+
+/* -------- Voice capture (main-loop helpers) -------- */
+#define VOICE_MIC_CAP_MS 15000
+
+static uint16_t next_sid;
+
+static void voice_send(Mapping *m, int sock, const uint8_t *buf, size_t len, int repeats) {
+    for (int r = 0; r < repeats; r++) {
+        if (log_level >= LEVEL_TRACE) {
+            char hex[VOICE_MAX_PKT * 3 + 1];
+            hex_bytes(buf, len, hex);
+            LOG_TRACE("Sending voice packet (%zu bytes): buf=[%s]\n", len, hex);
+        }
+        if (sendto(sock, buf, len, 0, (struct sockaddr *)&m->voice_addr, sizeof(m->voice_addr)) < 0) {
+            LOG_ERROR("Failed to send voice packet: %s\n", strerror(errno));
+        }
+    }
+}
+
+static void voice_hid_write(Mapping *m, const uint8_t *report, size_t len) {
+    if (m->voice_hidfd < 0) return;
+    if (write(m->voice_hidfd, report, len) != (ssize_t)len) {
+        LOG_ERROR("Voice: failed to write mic report to \"%s\": %s\n", m->name, strerror(errno));
+    }
+}
+
+/* Switch the mic off (if open) and send END `reason`. */
+static void voice_mic_close(Mapping *m, int sock, uint8_t reason) {
+    if (!m->mic_open) return;
+    voice_hid_write(m, m->voice->mic_off, m->voice->mic_off_len);
+    uint8_t buf[VOICE_MAX_PKT];
+    size_t len = voice_build_end(buf, m->sid, (uint16_t)(m->seq + 1), (uint32_t)(now_ms() & 0xFFFFFFFF), reason);
+    voice_send(m, sock, buf, len, edge_repeat_count);
+    m->mic_open = 0;
+    LOG_INFO("Voice end (%s): sid=%u frames=%u reason=%u\n", m->name, m->sid, m->frames, reason);
+}
+
+/* Remote gone: end any open session and drop the hidraw fd. */
+static void voice_close(Mapping *m, int sock, uint8_t reason) {
+    voice_mic_close(m, sock, reason);
+    if (m->voice_hidfd >= 0) {
+        close(m->voice_hidfd);
+        m->voice_hidfd = -1;
+    }
+}
+
+/* Handle the voice trigger key, in addition to it being sent as a normal
+ * key: down opens the mic and sends START, up closes it and sends END,
+ * repeat does nothing. */
+static void voice_on_key(Mapping *m, int value, int sock) {
+    if (!m->voice) return;
+
+    if (value == 1) {
+        /* Retry the hidraw lookup only on a fresh press: hidraw may appear after evdev. */
+        if (m->voice_hidfd < 0) voice_open_hidraw(m);
+        if (m->voice_hidfd < 0) return;
+
+        voice_hid_write(m, m->voice->mic_on, m->voice->mic_on_len);
+        m->mic_open = 1;
+        m->seq = 0;
+        m->frames = 0;
+        m->sid = ++next_sid;
+        m->mic_opened_ms = now_ms();
+        uint8_t buf[VOICE_MAX_PKT];
+        size_t len = voice_build_start(buf, m->sid, (uint32_t)(m->mic_opened_ms & 0xFFFFFFFF),
+                                       m->voice->codec, m->voice->trigger_key);
+        voice_send(m, sock, buf, len, edge_repeat_count);
+        LOG_INFO("Voice start (%s): sid=%u\n", m->name, m->sid);
+    } else if (value == 0) {
+        voice_mic_close(m, sock, VOICE_END_RELEASED);   /* no-op if the mic isn't open */
+    }
+    /* value == 2 (repeat): no voice action */
+}
+
+/* Read pending hidraw reports; forward audio frames while the mic is open. */
+static void voice_on_hidraw(Mapping *m, int sock) {
+    uint8_t report[256];
+    while (m->voice_hidfd >= 0) {
+        ssize_t n = read(m->voice_hidfd, report, sizeof(report));
+        if (n < 0 && (errno == EAGAIN || errno == EINTR)) break;
+        if (n <= 0) {
+            LOG_INFO("Voice: hidraw for \"%s\" closed (%s)\n", m->name, n == 0 ? "EOF" : strerror(errno));
+            voice_close(m, sock, VOICE_END_DISCONNECTED);
+            break;
+        }
+        size_t frame_len = 0;
+        const uint8_t *frame = voice_audio_payload(m->voice, report, (size_t)n, &frame_len);
+        if (!frame || !m->mic_open) continue;
+        uint8_t buf[VOICE_MAX_PKT];
+        size_t len = voice_build_audio(buf, sizeof(buf), m->sid, (uint16_t)(m->seq + 1),
+                                       (uint32_t)(now_ms() & 0xFFFFFFFF), m->voice->codec, frame, frame_len);
+        if (len == 0) {
+            LOG_ERROR("Voice: frame of %zu bytes too large for a voice packet, dropped\n", frame_len);
+            continue;
+        }
+        m->seq++;
+        m->frames++;
+        voice_send(m, sock, buf, len, 1);
+    }
+}
+
+/* ms until the earliest open mic reaches the cap, or -1 if no mic is open. */
+static int voice_next_timeout_ms(void) {
+    int best = -1;
+    uint64_t now = now_ms();
+    for (int i = 0; i < num_mappings; i++) {
+        if (!mappings[i].mic_open) continue;
+        uint64_t elapsed = now - mappings[i].mic_opened_ms;
+        int left = elapsed >= VOICE_MIC_CAP_MS ? 0 : (int)(VOICE_MIC_CAP_MS - elapsed);
+        if (best < 0 || left < best) best = left;
+    }
+    return best;
+}
+
+static void voice_enforce_cap(int sock) {
+    uint64_t now = now_ms();
+    for (int i = 0; i < num_mappings; i++) {
+        if (mappings[i].mic_open && now - mappings[i].mic_opened_ms >= VOICE_MIC_CAP_MS) {
+            voice_mic_close(&mappings[i], sock, VOICE_END_TIMEOUT);
+        }
+    }
+}
+
 /* -------- Main -------- */
 int main(int argc, char *argv[]) {
     if (argc >= 3 && strcmp(argv[1], "-c") == 0) {
@@ -581,6 +784,7 @@ int main(int argc, char *argv[]) {
 
     /* UDP socket */
     int sock = socket(AF_INET, SOCK_DGRAM, 0);
+    next_sid = (uint16_t)now_ms();   /* don't reuse recent session ids after a restart */
     if (sock < 0) {
         perror("socket");
         return 1;
@@ -623,6 +827,8 @@ int main(int argc, char *argv[]) {
                     mappings[m_idx].evfd = fd;
                     strncpy(mappings[m_idx].dev_path, path, sizeof(mappings[m_idx].dev_path) - 1);
                     mappings[m_idx].dev_path[sizeof(mappings[m_idx].dev_path) - 1] = '\0';
+                    mappings[m_idx].hid_err_logged = 0;
+                    voice_open_hidraw(&mappings[m_idx]);
                 } else {
                     close(fd);
                 }
@@ -639,10 +845,11 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    struct pollfd fds[2 * MAX_MAPPINGS + 1];
+    struct pollfd fds[3 * MAX_MAPPINGS + 1];
     int mapping_indices[MAX_MAPPINGS];
-    struct input_event ev;
     int hid_indices[MAX_MAPPINGS];
+    int vhid_indices[MAX_MAPPINGS];
+    struct input_event ev;
 
     while (1) {
         int nfds = 0;
@@ -673,7 +880,19 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        int ret = poll(fds, nfds, -1);
+        int vhid_start = nfds;
+        int num_vhid = 0;
+        for (int i = 0; i < num_mappings; i++) {
+            if (mappings[i].voice_hidfd >= 0) {
+                vhid_indices[num_vhid++] = i;
+                fds[nfds++] = (struct pollfd){
+                    .fd = mappings[i].voice_hidfd,
+                    .events = POLLIN
+                };
+            }
+        }
+
+        int ret = poll(fds, nfds, voice_next_timeout_ms());
         if (ret < 0) {
             if (errno == EINTR)
                 continue;
@@ -689,6 +908,7 @@ int main(int argc, char *argv[]) {
             /* Disconnect: kernel raises POLLHUP/POLLERR on BT HID removal */
             if (revents & (POLLHUP | POLLERR)) {
                 LOG_INFO("Remote \"%s\" disconnected (POLLHUP/POLLERR)\n", mappings[m_idx].name);
+                voice_close(&mappings[m_idx], sock, VOICE_END_DISCONNECTED);
                 close(mappings[m_idx].evfd);
                 mappings[m_idx].evfd = -1;
                 mappings[m_idx].dev_path[0] = '\0';
@@ -701,6 +921,7 @@ int main(int argc, char *argv[]) {
                         if (n == 0 || errno == ENODEV) {
                             LOG_INFO("Remote \"%s\" disconnected (%s)\n",
                                      mappings[m_idx].name, n == 0 ? "EOF" : "ENODEV");
+                            voice_close(&mappings[m_idx], sock, VOICE_END_DISCONNECTED);
                             close(mappings[m_idx].evfd);
                             mappings[m_idx].evfd = -1;
                             mappings[m_idx].dev_path[0] = '\0';
@@ -712,6 +933,7 @@ int main(int argc, char *argv[]) {
 
                     if (n != sizeof(ev)) {
                         LOG_ERROR("Short read from evdev: expected %zu, got %zd. Closing device.\n", sizeof(ev), n);
+                        voice_close(&mappings[m_idx], sock, VOICE_END_DISCONNECTED);
                         close(mappings[m_idx].evfd);
                         mappings[m_idx].evfd = -1;
                         mappings[m_idx].dev_path[0] = '\0';
@@ -723,6 +945,10 @@ int main(int argc, char *argv[]) {
                         LOG_TRACE("Scan Event (%s): scan_code=0x%x\n", mappings[m_idx].name, (unsigned)mappings[m_idx].pending_scan_code);
                     } else if (ev.type == EV_KEY) {
                         LOG_TRACE("Key Event (%s): code=%d, value=%d\n", mappings[m_idx].name, ev.code, ev.value);
+
+                        if (mappings[m_idx].voice && ev.code == mappings[m_idx].voice->trigger_key) {
+                            voice_on_key(&mappings[m_idx], ev.value, sock);
+                        }
 
                         send_key_packet(sock, &mappings[m_idx], ev.code,
                                         mappings[m_idx].pending_scan_code, ev.value);
@@ -737,7 +963,7 @@ int main(int argc, char *argv[]) {
         }
 
         /* ---- hidraw app-button reports ---- */
-        for (int i = hid_start; i < nfds; i++) {
+        for (int i = hid_start; i < vhid_start; i++) {
             Mapping *m = &mappings[hid_indices[i - hid_start]];
             if (fds[i].revents & (POLLHUP | POLLERR | POLLNVAL)) {
                 LOG_INFO("hidraw %s for \"%s\" disconnected (POLLHUP/POLLERR)\n", m->hid_path, m->name);
@@ -746,6 +972,20 @@ int main(int argc, char *argv[]) {
                 handle_hidraw(sock, m);
             }
         }
+
+        /* ---- hidraw (voice) reports ---- */
+        for (int i = 0; i < num_vhid; i++) {
+            Mapping *m = &mappings[vhid_indices[i]];
+            short revents = fds[vhid_start + i].revents;
+            if (m->voice_hidfd != fds[vhid_start + i].fd) continue;   /* closed meanwhile */
+            if (revents & (POLLHUP | POLLERR)) {
+                LOG_INFO("Voice: hidraw for \"%s\" hung up\n", m->name);
+                voice_close(m, sock, VOICE_END_DISCONNECTED);
+            } else if (revents & POLLIN) {
+                voice_on_hidraw(m, sock);
+            }
+        }
+        voice_enforce_cap(sock);
 
         /* ---- inotify events ---- */
         if (fds[ifd_idx].revents & POLLIN) {
@@ -780,6 +1020,7 @@ int main(int argc, char *argv[]) {
                             for (int i = 0; i < num_mappings; i++) {
                                 if (mappings[i].evfd >= 0 && strcmp(path, mappings[i].dev_path) == 0) {
                                     LOG_INFO("Remote \"%s\" disconnected (inotify: %s)\n", mappings[i].name, path);
+                                    voice_close(&mappings[i], sock, VOICE_END_DISCONNECTED);
                                     close(mappings[i].evfd);
                                     mappings[i].evfd = -1;
                                     mappings[i].dev_path[0] = '\0';
@@ -795,6 +1036,8 @@ int main(int argc, char *argv[]) {
                                     mappings[m_idx].evfd = fd;
                                     strncpy(mappings[m_idx].dev_path, path, sizeof(mappings[m_idx].dev_path) - 1);
                                     mappings[m_idx].dev_path[sizeof(mappings[m_idx].dev_path) - 1] = '\0';
+                                    mappings[m_idx].hid_err_logged = 0;
+                                    voice_open_hidraw(&mappings[m_idx]);
                                 } else {
                                     close(fd);
                                 }

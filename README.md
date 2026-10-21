@@ -280,5 +280,49 @@ make uninstall
 sudo rm -f /etc/remote-bridge.conf
 ```
 
+## Voice Remotes
+
+Some remotes have a microphone. Add a `VOICE=` line to the config to let the
+bridge forward voice from one of them:
+
+```
+VOICE="<exact_remote_name>,<profile>,<voice_port>"
+```
+
+How it works:
+
+- While the voice button is held, the bridge switches the remote's mic on.
+- It sends each audio frame to the remote's server IP on `<voice_port>`, as a
+  voice packet. Voice packets have their own port, separate from key packets.
+- When the button is released, or after 15 s at most, the bridge switches the
+  mic off.
+- The voice button is also sent as a normal key; the
+  gateway's routing decides what to do with each one.
+
+| Profile | Remote | Voice button | Mic on / off | Audio |
+|---------|--------|--------------|--------------|-------|
+| `firetv` | Amazon Fire TV voice remote | `KEY_SEARCH` | hidraw output report `F2 01` / `F2 00` | input report `0xF0`, one Opus frame per 20 ms |
+
+The bridge talks to the remote through its `/dev/hidrawN` node, so the
+service user needs read/write access to it. The packages install a udev rule
+for this. On Alpine with mdev, add the following to `/etc/mdev.conf`:
+
+```
+hidraw[0-9]+ root:input 660
+```
+
+If the hidraw node can't be found or opened, the bridge logs an error and the
+voice button keeps working as a normal key.
+
+The voice packet format (big-endian) has a 10-byte header: `version` (1),
+`msg_type`, `session_id` u16, `seq` u16, `timestamp_ms` u32. What follows
+depends on the message type:
+
+- START (1): `codec`, then `trigger_key` u16.
+- AUDIO (2): `codec`, then the frame.
+- END (3): `reason`: 0 = released, 1 = timeout, 2 = disconnected.
+
+START and END are sent `EDGE_REPEAT_COUNT` times.
+
 ## Configuration File Location
 `/etc/remote-bridge.conf`
