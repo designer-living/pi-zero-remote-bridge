@@ -255,7 +255,10 @@ sudo /usr/local/bin/remote_bridge "Remote Name" <SERVER_IP> <SERVER_PORT> DEBUG
       ```
       Then restart `mdev` (or just reboot).
 4.  **Device Name**: The `REMOTE_NAME` must match the output of `evtest` *exactly*.
-5.  **Fire TV app buttons**: Netflix / Amazon Video / App Button / Amazon Music are read from the remote's `/dev/hidraw*` node (not evdev), so that node must also be readable by the `input` group (the `hidraw` line above, or the udev rule in this repo). They are forwarded as `KEY_UNKNOWN` with scan code `0xFF00A2` (Netflix), `0xFF00A1` (Amazon Video), `0xFF00A3` (App Button) and `0xFF00A4` (Amazon Music). Log lines appear at `TRACE`.
+5.  **App buttons (e.g. Fire TV Netflix / Amazon Video / App Button / Amazon Music)**: some remote buttons never reach evdev, so the bridge reads them from the remote's `/dev/hidraw*` node instead. It works for any remote whose HID report descriptor declares them (no per-model configuration); that node must be readable by the `input` group (the `hidraw` line above, or the udev rule in this repo). They are forwarded as `KEY_UNKNOWN` with scan code `0xFF0000 | code`: on the Fire TV remote `0xFF00A2` (Netflix), `0xFF00A1` (Amazon Video), `0xFF00A3` (App Button) and `0xFF00A4` (Amazon Music). Check the log at the default `INFO` level:
+    - `App buttons: "<remote>" using /dev/hidraw0 (report 0xef, 3 codes)` — enabled; each press then logs `App button (<remote>): Netflix code=0xa2 scan_code=0xff00a2 pressed`.
+    - `App buttons: "<remote>" (/dev/hidraw0) declares no app-button report; not enabled` — this remote has no such buttons.
+    - `App buttons: cannot open /dev/hidraw0 for "<remote>": Permission denied (check hidraw permissions)` — fix the `hidraw` permissions above.
 6.  **UDP Connectivity**: Use `nc -u -l -p <PORT>` on your server to verify packets are arriving.
 
 ---

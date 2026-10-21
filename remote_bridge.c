@@ -147,17 +147,89 @@ static const char* level_to_str(int level) {
 
 #define MAX_MAPPINGS 32
 
-/* Fire TV remotes (Bluetooth HID, 0171:041E, 0171:0418 or 0171:0427): their
- * Netflix / Amazon Video / App / Amazon Music buttons never reach evdev. They
- * only arrive as vendor-page (0xFF00) input report 0xEF on the hidraw node:
- * <0xEF> <code> <code> <code>, a keyboard-style array of up to 3 held codes,
- * all zero when released. */
-#define HID_VENDOR_ID           0x0171
-#define HID_APP_REPORT_ID       0xEF
-#define HID_APP_CODES           3
-#define HID_APP_SCAN_BASE       0xFF0000u   /* scan code = base | code; 0xFF00 page can't collide with consumer-page 0xc00xx */
+/* Remote buttons the kernel drops: HID input reports on a usage page that
+ * hid-input doesn't turn into keys never reach evdev, so e.g. the Fire TV
+ * remote's Netflix / Amazon Video / App / Amazon Music buttons (page 0x00FF,
+ * report 0xEF: <0xEF> <code> <code> <code>) only exist on its hidraw node.
+ * Any remote whose report descriptor declares an array of 8-bit usages with a
+ * usage range on such a page is read this way: a keyboard-style array of held
+ * codes, all zero when released. */
+#define HID_APP_CODES_MAX       8
+#define HID_APP_SCAN_BASE       0xFF0000u   /* scan code = base | code; can't collide with MSC_SCAN page<<16 | usage of key pages (e.g. consumer 0xc00xx) */
 #define KEY_UNKNOWN_CODE        240
 #define HIDRAW_SYSFS_DIR        "/sys/class/hidraw"
+
+typedef struct {
+    uint8_t report_id;      /* 0 = the device doesn't use report ids (no id byte) */
+    uint8_t offset;         /* byte offset of the code array in a raw report, id byte included */
+    uint8_t count;          /* number of codes in the array */
+} HidButtonReport;
+
+/* Usage pages whose arrays hid-input maps to key events (they arrive via evdev). */
+static int hid_page_reaches_evdev(uint32_t page) {
+    switch (page) {
+        case 0x01:  /* Generic Desktop */
+        case 0x07:  /* Keyboard/Keypad */
+        case 0x09:  /* Button */
+        case 0x0B:  /* Telephony */
+        case 0x0C:  /* Consumer */
+        case 0x0D:  /* Digitizer */
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+/* Walks a HID report descriptor for the first input item that is a data array
+ * of 8-bit usages, on a page that doesn't reach evdev, with a Usage Minimum/Maximum.
+ * Returns 0 and fills out, or -1 if the descriptor has none. */
+static int hid_find_button_report(const uint8_t *desc, size_t len, HidButtonReport *out) {
+    uint32_t page = 0, size = 0, count = 0;
+    uint8_t report_id = 0;
+    int have_min = 0, have_max = 0;
+    uint32_t bits[256] = {0};   /* input bits seen so far, per report id */
+
+    size_t i = 0;
+    while (i < len) {
+        uint8_t prefix = desc[i];
+        if (prefix == 0xFE) {                       /* long item: skip */
+            if (i + 1 >= len) return -1;
+            i += 3 + desc[i + 1];
+            continue;
+        }
+        size_t dlen = (prefix & 3) == 3 ? 4 : (prefix & 3);
+        if (i + 1 + dlen > len) return -1;
+        uint32_t data = 0;
+        for (size_t k = 0; k < dlen; k++) data |= (uint32_t)desc[i + 1 + k] << (8 * k);
+        uint8_t type = (prefix >> 2) & 3, tag = prefix >> 4;
+        i += 1 + dlen;
+
+        if (type == 1) {                            /* global */
+            if (tag == 0) page = data;
+            else if (tag == 7) size = data;
+            else if (tag == 8) report_id = (uint8_t)data;
+            else if (tag == 9) count = data;
+        } else if (type == 2) {                     /* local */
+            if (tag == 1) have_min = 1;
+            else if (tag == 2) have_max = 1;
+        } else if (type == 0) {                     /* main */
+            if (tag == 8) {                         /* input */
+                int is_array = (data & 0x03) == 0;  /* data, array */
+                uint32_t start = bits[report_id] + (report_id ? 8 : 0);
+                if (is_array && !hid_page_reaches_evdev(page) && have_min && have_max && size == 8 &&
+                    count >= 1 && count <= HID_APP_CODES_MAX && start % 8 == 0 && start / 8 < 256) {
+                    out->report_id = report_id;
+                    out->offset = (uint8_t)(start / 8);
+                    out->count = (uint8_t)count;
+                    return 0;
+                }
+                bits[report_id] += size * count;
+            }
+            have_min = have_max = 0;                /* locals only apply to one main item */
+        }
+    }
+    return -1;
+}
 
 typedef struct {
     uint8_t code;
@@ -178,29 +250,30 @@ static const char *app_button_name(uint8_t code) {
     }
 }
 
-/* Diffs a 0xEF report against the previous array (updated in place).
- * Returns the number of events written to out (max 2 * HID_APP_CODES),
+/* Diffs a button report against the previous array (updated in place).
+ * Returns the number of events written to out (max 2 * HID_APP_CODES_MAX),
  * releases first. Reports with any other ID, or too short, are ignored. */
-static int parse_app_button_report(const uint8_t *buf, size_t len,
-                                   uint8_t prev[HID_APP_CODES], AppButtonEvent *out) {
-    if (len < 1 + HID_APP_CODES || buf[0] != HID_APP_REPORT_ID) return 0;
+static int parse_app_button_report(const HidButtonReport *r, const uint8_t *buf, size_t len,
+                                   uint8_t prev[HID_APP_CODES_MAX], AppButtonEvent *out) {
+    const int nc = r->count;
+    if (len < (size_t)r->offset + nc || (r->report_id && buf[0] != r->report_id)) return 0;
 
-    const uint8_t *cur = buf + 1;
+    const uint8_t *cur = buf + r->offset;
     int n = 0;
-    for (int i = 0; i < HID_APP_CODES; i++) {
+    for (int i = 0; i < nc; i++) {
         if (prev[i] == 0) continue;
         int still_held = 0;
-        for (int j = 0; j < HID_APP_CODES; j++) if (cur[j] == prev[i]) still_held = 1;
+        for (int j = 0; j < nc; j++) if (cur[j] == prev[i]) still_held = 1;
         if (!still_held) out[n++] = (AppButtonEvent){ prev[i], 0 };
     }
-    for (int i = 0; i < HID_APP_CODES; i++) {
+    for (int i = 0; i < nc; i++) {
         if (cur[i] == 0) continue;
         int seen = 0;
-        for (int j = 0; j < HID_APP_CODES; j++) if (prev[j] == cur[i]) seen = 1;
+        for (int j = 0; j < nc; j++) if (prev[j] == cur[i]) seen = 1;
         for (int j = 0; j < i; j++) if (cur[j] == cur[i]) seen = 1;
         if (!seen) out[n++] = (AppButtonEvent){ cur[i], 1 };
     }
-    memcpy(prev, cur, HID_APP_CODES);
+    memcpy(prev, cur, nc);
     return n;
 }
 
@@ -211,10 +284,12 @@ typedef struct {
     struct sockaddr_in server_addr;
     int evfd;
     uint32_t pending_scan_code;
-    char uniq[64];          /* EVIOCGUNIQ of the matched evdev node; ties the remote's hidraw node to this mapping */
     int hidfd;              /* hidraw node of the same remote (vendor app buttons), or -1 */
     char hid_path[256];
-    uint8_t hid_prev[HID_APP_CODES];
+    HidButtonReport hid_report;
+    uint8_t hid_prev[HID_APP_CODES_MAX];
+    int hid_unsupported;    /* no app-button report on this remote; don't look again this connect */
+    int hid_open_err_logged;
     /* Voice capture (only when a VOICE= line names this remote) */
     const VoiceProfile *voice;      /* NULL = voice off: trigger key is a normal key */
     struct sockaddr_in voice_addr;  /* server IP with the voice port */
@@ -247,10 +322,11 @@ static int add_mapping(const char *name, const char *ip, int port, const char *i
     m->dev_path[0] = '\0';
     m->evfd = -1;
     m->pending_scan_code = 0;
-    m->uniq[0] = '\0';
     m->hidfd = -1;
     m->hid_path[0] = '\0';
     memset(m->hid_prev, 0, sizeof(m->hid_prev));
+    m->hid_unsupported = 0;
+    m->hid_open_err_logged = 0;
     m->voice = NULL;
     m->voice_hidfd = -1;
     m->mic_open = 0;
@@ -311,7 +387,6 @@ static int find_available_mapping(int fd, const char *path) {
                 continue;
             }
 
-            snprintf(mappings[i].uniq, sizeof(mappings[i].uniq), "%s", uniq);
             LOG_INFO("Matched device: %s at %s (phys \"%s\" uniq \"%s\") for mapping %d\n",
                 name, path, phys, uniq, i);
             return i;
@@ -355,15 +430,6 @@ static void send_key_packet(int sock, Mapping *m, uint16_t key_code, uint32_t sc
     }
 }
 
-static const unsigned hid_product_ids[] = { 0x041E, 0x0418, 0x0427 };
-
-static int is_fire_tv_remote(unsigned vid, unsigned pid) {
-    if (vid != HID_VENDOR_ID) return 0;
-    for (size_t i = 0; i < sizeof(hid_product_ids) / sizeof(hid_product_ids[0]); i++)
-        if (pid == hid_product_ids[i]) return 1;
-    return 0;
-}
-
 static void close_hidraw(Mapping *m) {
     if (m->hidfd >= 0) close(m->hidfd);
     m->hidfd = -1;
@@ -371,68 +437,60 @@ static void close_hidraw(Mapping *m) {
     memset(m->hid_prev, 0, sizeof(m->hid_prev));
 }
 
-/* Finds a hidraw node belonging to the Fire TV remote with the given
- * Bluetooth address (HID_UNIQ in sysfs), by vendor/product id, not by number. */
-static int find_hidraw_path(const char *uniq, char *path, size_t path_len) {
-    DIR *d = opendir(HIDRAW_SYSFS_DIR);
-    if (!d) return -1;
-
-    struct dirent *ent;
-    int found = -1;
-    while (found < 0 && (ent = readdir(d))) {
-        if (strncmp(ent->d_name, "hidraw", 6) != 0) continue;
-
-        char uevent[sizeof(HIDRAW_SYSFS_DIR) + 2 * 256 + 16];
-        snprintf(uevent, sizeof(uevent), HIDRAW_SYSFS_DIR "/%s/device/uevent", ent->d_name);
-        FILE *f = fopen(uevent, "r");
-        if (!f) continue;
-
-        unsigned vid = 0, pid = 0;
-        char hid_uniq[64] = {0};
-        char line[256];
-        while (fgets(line, sizeof(line), f)) {
-            unsigned bus;
-            if (sscanf(line, "HID_ID=%x:%x:%x", &bus, &vid, &pid) == 3) continue;
-            sscanf(line, "HID_UNIQ=%63s", hid_uniq);
-        }
-        fclose(f);
-
-        if (!is_fire_tv_remote(vid, pid)) continue;
-        if (uniq[0] == '\0' || strcasecmp(uniq, hid_uniq) != 0) continue;
-
-        char candidate[256];
-        snprintf(candidate, sizeof(candidate), "/dev/%.200s", ent->d_name);
-        int in_use = 0;
-        for (int i = 0; i < num_mappings; i++)
-            if (strcmp(mappings[i].hid_path, candidate) == 0) in_use = 1;
-        if (in_use) continue;
-
-        snprintf(path, path_len, "%s", candidate);
-        found = 0;
-    }
-    closedir(d);
-    return found;
+/* Reads the report descriptor of /dev/hidrawN from sysfs. Returns its length, or -1. */
+static ssize_t read_report_descriptor(const char *dev_path, uint8_t *buf, size_t cap) {
+    const char *node = strrchr(dev_path, '/');
+    node = node ? node + 1 : dev_path;
+    char path[300];
+    snprintf(path, sizeof(path), HIDRAW_SYSFS_DIR "/%.200s/device/report_descriptor", node);
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return -1;
+    ssize_t n = read(fd, buf, cap);
+    close(fd);
+    return n;
 }
 
-/* Opens the hidraw node for every matched remote that doesn't have one yet.
- * Safe to call repeatedly (after an evdev match, or when a hidraw node appears). */
+/* Opens the hidraw node of every matched remote that declares vendor buttons
+ * and doesn't have it open yet. Safe to call repeatedly (after an evdev match,
+ * or when a hidraw node appears or its permissions change). */
 static void attach_hidraw(void) {
     for (int i = 0; i < num_mappings; i++) {
         Mapping *m = &mappings[i];
-        if (m->evfd < 0 || m->hidfd >= 0) continue;
+        if (m->evfd < 0 || m->hidfd >= 0 || m->hid_unsupported) continue;
 
-        char path[256];
-        if (find_hidraw_path(m->uniq, path, sizeof(path)) < 0) continue;
+        const char *event_name = strrchr(m->dev_path, '/');
+        event_name = event_name ? event_name + 1 : m->dev_path;
+        char path[64];
+        if (voice_find_hidraw_for_event("/sys", event_name, path, sizeof(path)) != 0) {
+            LOG_DEBUG("App buttons: no hidraw node (yet) for \"%s\" (%s)\n", m->name, m->dev_path);
+            continue;
+        }
+
+        uint8_t desc[4096];
+        ssize_t dlen = read_report_descriptor(path, desc, sizeof(desc));
+        if (dlen < 0) {
+            LOG_DEBUG("App buttons: cannot read report descriptor of %s: %s\n", path, strerror(errno));
+            continue;
+        }
+        if (hid_find_button_report(desc, (size_t)dlen, &m->hid_report) != 0) {
+            m->hid_unsupported = 1;
+            LOG_INFO("App buttons: \"%s\" (%s) declares no app-button report; not enabled\n", m->name, path);
+            continue;
+        }
 
         int fd = open(path, O_RDONLY | O_NONBLOCK);
         if (fd < 0) {
-            LOG_DEBUG("Failed to open %s for \"%s\": %s\n", path, m->name, strerror(errno));
+            if (!m->hid_open_err_logged)
+                LOG_ERROR("App buttons: cannot open %s for \"%s\": %s (check hidraw permissions)\n",
+                          path, m->name, strerror(errno));
+            m->hid_open_err_logged = 1;
             continue;
         }
         m->hidfd = fd;
         snprintf(m->hid_path, sizeof(m->hid_path), "%s", path);
         memset(m->hid_prev, 0, sizeof(m->hid_prev));
-        LOG_INFO("Opened %s for app buttons of \"%s\"\n", path, m->name);
+        LOG_INFO("App buttons: \"%s\" using %s (report 0x%02x, %d codes)\n",
+                 m->name, path, m->hid_report.report_id, m->hid_report.count);
     }
 }
 
@@ -448,12 +506,16 @@ static void handle_hidraw(int sock, Mapping *m) {
             break;
         }
 
-        AppButtonEvent evs[2 * HID_APP_CODES];
-        int count = parse_app_button_report(buf, (size_t)n, m->hid_prev, evs);
+        AppButtonEvent evs[2 * HID_APP_CODES_MAX];
+        int count = parse_app_button_report(&m->hid_report, buf, (size_t)n, m->hid_prev, evs);
         for (int i = 0; i < count; i++) {
             uint32_t scan = app_button_scan_code(evs[i].code);
-            LOG_TRACE("App Button Event (%s): %s code=0x%02x scan_code=0x%x value=%d\n",
-                      m->name, app_button_name(evs[i].code), evs[i].code, (unsigned)scan, evs[i].value);
+            if (evs[i].value)
+                LOG_INFO("App button (%s): %s code=0x%02x scan_code=0x%x pressed\n",
+                         m->name, app_button_name(evs[i].code), evs[i].code, (unsigned)scan);
+            else
+                LOG_DEBUG("App button (%s): %s code=0x%02x scan_code=0x%x released\n",
+                          m->name, app_button_name(evs[i].code), evs[i].code, (unsigned)scan);
             send_key_packet(sock, m, KEY_UNKNOWN_CODE, scan, evs[i].value);
         }
     }
@@ -837,6 +899,8 @@ int main(int argc, char *argv[]) {
                     strncpy(mappings[m_idx].dev_path, path, sizeof(mappings[m_idx].dev_path) - 1);
                     mappings[m_idx].dev_path[sizeof(mappings[m_idx].dev_path) - 1] = '\0';
                     mappings[m_idx].hid_err_logged = 0;
+                    mappings[m_idx].hid_unsupported = 0;
+                    mappings[m_idx].hid_open_err_logged = 0;
                     voice_open_hidraw(&mappings[m_idx]);
                 } else {
                     close(fd);
@@ -1046,6 +1110,10 @@ int main(int argc, char *argv[]) {
                                     strncpy(mappings[m_idx].dev_path, path, sizeof(mappings[m_idx].dev_path) - 1);
                                     mappings[m_idx].dev_path[sizeof(mappings[m_idx].dev_path) - 1] = '\0';
                                     mappings[m_idx].hid_err_logged = 0;
+                                    mappings[m_idx].hid_unsupported = 0;
+                                    mappings[m_idx].hid_open_err_logged = 0;
+                    mappings[m_idx].hid_unsupported = 0;
+                    mappings[m_idx].hid_open_err_logged = 0;
                                     voice_open_hidraw(&mappings[m_idx]);
                                 } else {
                                     close(fd);

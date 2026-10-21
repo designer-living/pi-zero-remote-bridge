@@ -35,7 +35,8 @@ separate lint step; `CFLAGS` already includes `-Wall -Wextra` (see
 ## Testing / verification
 
 `make test` builds and runs `tests/test_hidraw.c`, which unit-tests the
-hidraw report parser and app-button scan-code mapping (it `#include`s
+HID report-descriptor walker, hidraw report parser and app-button scan-code
+mapping (it `#include`s
 `remote_bridge.c` with `REMOTE_BRIDGE_TEST` defined, which hides `main`).
 Everything else talks to real kernel input devices and a real network
 socket, so verification is manual:
@@ -100,17 +101,22 @@ libc). The flow:
    `value == 2` (repeat) events per-mapping using `repeat_delay_ms`, then
    builds a `struct Packet` (consuming and clearing `pending_scan_code`) and
    `sendto()`s it to that mapping's server.
-   **Fire TV remote app buttons** (Netflix, Amazon Video, App Button, Amazon
-   Music) never reach evdev: the remote (0171:041E, 0171:0418 or 0171:0427) sends them only as
-   vendor-page input report `0xEF` on its `/dev/hidraw*` node. After an
-   evdev match, `attach_hidraw()` finds the hidraw node by VID/PID and
-   `HID_UNIQ` (== the evdev `uniq`) in `/sys/class/hidraw`, opens it
-   read-only, and polls it in the same loop (a `/dev` inotify watch handles
-   hidraw nodes appearing/disappearing). `parse_app_button_report()` diffs
-   the 3-byte code array against the previous report: new code = press,
-   dropped code = release. Each is sent as `KEY_UNKNOWN` (240) with
-   `scan_code = 0xFF0000 | code` (`0xFF00A2` Netflix, `A1` Amazon Video,
-   `A3` App Button, `A4` Amazon Music). Needs the udev `hidraw` rule so the
+   **App buttons from hidraw** (e.g. the Fire TV remote's Netflix, Amazon
+   Video, App Button, Amazon Music) never reach evdev: they're an array
+   input report on a usage page hid-input doesn't turn into keys (Fire TV:
+   page `0x00FF`, report `0xEF`). After an evdev match, `attach_hidraw()`
+   finds the hidraw node of the same HID device (`voice_find_hidraw_for_event()`),
+   reads its `report_descriptor` from sysfs and asks
+   `hid_find_button_report()` for the first input array of 8-bit usages with a
+   Usage Min/Max on such a page. If there is one it opens the node read-only
+   and polls it in the same loop (a `/dev` inotify watch handles hidraw nodes
+   appearing/disappearing or their permissions changing); if not, it logs that
+   once per connect and leaves the remote alone. No vendor/product ids are
+   involved. `parse_app_button_report()` diffs the code array against the
+   previous report: new code = press, dropped code = release. Each is sent as
+   `KEY_UNKNOWN` (240) with `scan_code = 0xFF0000 | code` (Fire TV: `0xFF00A2`
+   Netflix, `A1` Amazon Video, `A3` App Button, `A4` Amazon Music). Presses
+   are logged at INFO, releases at DEBUG. Needs the udev `hidraw` rule so the
    `input` group can read the node.
 5. **Wire format** — `struct Packet` (packed, 12 bytes):
    - `header` (1 byte): upper 4 bits = `PACKET_FORMAT_VERSION`, lower 4
