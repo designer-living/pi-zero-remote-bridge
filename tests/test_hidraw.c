@@ -71,9 +71,17 @@ static void test_scan_codes(void) {
     CHECK(strcmp(app_button_name(0x77), "unknown") == 0);
 }
 
+static void test_fire_tv_ids(void) {
+    CHECK(is_fire_tv_remote(0x0171, 0x041E));
+    CHECK(is_fire_tv_remote(0x0171, 0x0418));
+    CHECK(!is_fire_tv_remote(0x0171, 0x0001));
+    CHECK(!is_fire_tv_remote(0x046D, 0x041E));
+}
+
 int main(void) {
     test_press(); test_release(); test_repeat_ignored();
     test_two_codes_held(); test_other_reports_ignored(); test_scan_codes();
+    test_fire_tv_ids();
     if (failures) { printf("%d failure(s)\n", failures); return 1; }
     printf("all hidraw tests passed\n");
     return 0;
