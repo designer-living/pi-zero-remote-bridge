@@ -114,10 +114,3 @@ int voice_find_hidraw_for_event(const char *sysfs_root, const char *event_name, 
     closedir(d);
     return rc;
 }
-
-/* -------- Trigger-key decision -------- */
-VoiceKeyAction voice_key_action(int value, int voice_owned, int hid_ready) {
-    if (voice_owned) return value == 0 ? VOICE_KEY_END : VOICE_KEY_SWALLOW;
-    if (value == 1 && hid_ready) return VOICE_KEY_START;
-    return VOICE_KEY_PASS;
-}

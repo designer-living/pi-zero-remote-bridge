@@ -296,8 +296,8 @@ How it works:
   voice packet. Voice packets have their own port, separate from key packets.
 - When the button is released, or after 15 s at most, the bridge switches the
   mic off.
-- A voice-enabled remote's voice button is not sent as a normal key. The
-  gateway turns it back into one when voice can't be delivered.
+- The voice button is still sent as a normal key, same as any other; the
+  gateway's routing decides what to do with each one.
 
 | Profile | Remote | Voice button | Mic on / off | Audio |
 |---------|--------|--------------|--------------|-------|

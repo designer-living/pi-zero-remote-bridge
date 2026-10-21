@@ -224,7 +224,6 @@ typedef struct {
     uint16_t seq;
     uint64_t mic_opened_ms;
     uint32_t frames;
-    int voice_owned;                /* current press's down was taken by voice */
     int hid_err_logged;             /* hidraw lookup/open error already logged this connect */
 } Mapping;
 
@@ -255,7 +254,6 @@ static int add_mapping(const char *name, const char *ip, int port, const char *i
     m->voice = NULL;
     m->voice_hidfd = -1;
     m->mic_open = 0;
-    m->voice_owned = 0;
     m->hid_err_logged = 0;
 
     memset(&m->server_addr, 0, sizeof(m->server_addr));
@@ -664,17 +662,17 @@ static void voice_close(Mapping *m, int sock, uint8_t reason) {
     }
 }
 
-/* Handle the voice trigger key. Returns 1 if consumed (no key packet sent). */
-static int voice_on_key(Mapping *m, int value, int sock) {
-    if (!m->voice) return 0;
-    /* Retry the hidraw lookup only on a fresh press: hidraw may appear after evdev. */
-    if (value == 1 && !m->voice_owned && m->voice_hidfd < 0) voice_open_hidraw(m);
+/* Handle the voice trigger key, in addition to it being sent as a normal
+ * key: down opens the mic and sends START, up closes it and sends END,
+ * repeat does nothing. */
+static void voice_on_key(Mapping *m, int value, int sock) {
+    if (!m->voice) return;
 
-    switch (voice_key_action(value, m->voice_owned, m->voice_hidfd >= 0)) {
-    case VOICE_KEY_PASS:
-        return 0;
-    case VOICE_KEY_START: {
-        m->voice_owned = 1;
+    if (value == 1) {
+        /* Retry the hidraw lookup only on a fresh press: hidraw may appear after evdev. */
+        if (m->voice_hidfd < 0) voice_open_hidraw(m);
+        if (m->voice_hidfd < 0) return;
+
         voice_hid_write(m, m->voice->mic_on, m->voice->mic_on_len);
         m->mic_open = 1;
         m->seq = 0;
@@ -686,16 +684,10 @@ static int voice_on_key(Mapping *m, int value, int sock) {
                                        m->voice->codec, m->voice->trigger_key);
         voice_send(m, sock, buf, len, edge_repeat_count);
         LOG_INFO("Voice start (%s): sid=%u\n", m->name, m->sid);
-        return 1;
+    } else if (value == 0) {
+        voice_mic_close(m, sock, VOICE_END_RELEASED);   /* no-op if the mic isn't open */
     }
-    case VOICE_KEY_END:
-        voice_mic_close(m, sock, VOICE_END_RELEASED);   /* no-op after the cap or a hidraw loss */
-        m->voice_owned = 0;
-        return 1;
-    case VOICE_KEY_SWALLOW:
-    default:
-        return 1;
-    }
+    /* value == 2 (repeat): no voice action */
 }
 
 /* Read pending hidraw reports; forward audio frames while the mic is open. */
@@ -836,7 +828,6 @@ int main(int argc, char *argv[]) {
                     strncpy(mappings[m_idx].dev_path, path, sizeof(mappings[m_idx].dev_path) - 1);
                     mappings[m_idx].dev_path[sizeof(mappings[m_idx].dev_path) - 1] = '\0';
                     mappings[m_idx].hid_err_logged = 0;
-                    mappings[m_idx].voice_owned = 0;
                     voice_open_hidraw(&mappings[m_idx]);
                 } else {
                     close(fd);
@@ -955,10 +946,8 @@ int main(int argc, char *argv[]) {
                     } else if (ev.type == EV_KEY) {
                         LOG_TRACE("Key Event (%s): code=%d, value=%d\n", mappings[m_idx].name, ev.code, ev.value);
 
-                        if (mappings[m_idx].voice && ev.code == mappings[m_idx].voice->trigger_key &&
-                            voice_on_key(&mappings[m_idx], ev.value, sock)) {
-                            if (ev.value == 0) mappings[m_idx].pending_scan_code = 0;
-                            continue;
+                        if (mappings[m_idx].voice && ev.code == mappings[m_idx].voice->trigger_key) {
+                            voice_on_key(&mappings[m_idx], ev.value, sock);
                         }
 
                         send_key_packet(sock, &mappings[m_idx], ev.code,
@@ -1048,7 +1037,6 @@ int main(int argc, char *argv[]) {
                                     strncpy(mappings[m_idx].dev_path, path, sizeof(mappings[m_idx].dev_path) - 1);
                                     mappings[m_idx].dev_path[sizeof(mappings[m_idx].dev_path) - 1] = '\0';
                                     mappings[m_idx].hid_err_logged = 0;
-                                    mappings[m_idx].voice_owned = 0;
                                     voice_open_hidraw(&mappings[m_idx]);
                                 } else {
                                     close(fd);
