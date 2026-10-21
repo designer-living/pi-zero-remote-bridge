@@ -510,12 +510,8 @@ static void handle_hidraw(int sock, Mapping *m) {
         int count = parse_app_button_report(&m->hid_report, buf, (size_t)n, m->hid_prev, evs);
         for (int i = 0; i < count; i++) {
             uint32_t scan = app_button_scan_code(evs[i].code);
-            if (evs[i].value)
-                LOG_INFO("App button (%s): %s code=0x%02x scan_code=0x%x pressed\n",
-                         m->name, app_button_name(evs[i].code), evs[i].code, (unsigned)scan);
-            else
-                LOG_DEBUG("App button (%s): %s code=0x%02x scan_code=0x%x released\n",
-                          m->name, app_button_name(evs[i].code), evs[i].code, (unsigned)scan);
+            LOG_TRACE("App button (%s): %s code=0x%02x scan_code=0x%x value=%d\n",
+                      m->name, app_button_name(evs[i].code), evs[i].code, (unsigned)scan, evs[i].value);
             send_key_packet(sock, m, KEY_UNKNOWN_CODE, scan, evs[i].value);
         }
     }

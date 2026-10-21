@@ -115,8 +115,8 @@ libc). The flow:
    involved. `parse_app_button_report()` diffs the code array against the
    previous report: new code = press, dropped code = release. Each is sent as
    `KEY_UNKNOWN` (240) with `scan_code = 0xFF0000 | code` (Fire TV: `0xFF00A2`
-   Netflix, `A1` Amazon Video, `A3` App Button, `A4` Amazon Music). Presses
-   are logged at INFO, releases at DEBUG. Needs the udev `hidraw` rule so the
+   Netflix, `A1` Amazon Video, `A3` App Button, `A4` Amazon Music), logged at
+   TRACE. Needs the udev `hidraw` rule so the
    `input` group can read the node.
 5. **Wire format** — `struct Packet` (packed, 12 bytes):
    - `header` (1 byte): upper 4 bits = `PACKET_FORMAT_VERSION`, lower 4
