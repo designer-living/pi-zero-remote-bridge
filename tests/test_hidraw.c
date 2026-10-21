@@ -74,6 +74,7 @@ static void test_scan_codes(void) {
 static void test_fire_tv_ids(void) {
     CHECK(is_fire_tv_remote(0x0171, 0x041E));
     CHECK(is_fire_tv_remote(0x0171, 0x0418));
+    CHECK(is_fire_tv_remote(0x0171, 0x0427));
     CHECK(!is_fire_tv_remote(0x0171, 0x0001));
     CHECK(!is_fire_tv_remote(0x046D, 0x041E));
 }
