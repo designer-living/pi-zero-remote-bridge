@@ -3,6 +3,8 @@
 #define REMOTE_BRIDGE_TEST
 #include "../remote_bridge.c"
 
+#include <sys/un.h>
+
 static int failures = 0;
 #define CHECK(cond) do { if (!(cond)) { printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); failures++; } } while (0)
 
@@ -54,7 +56,7 @@ static void test_key_is_v3(void) {
     close(cap);
 }
 
-/* CI and the build container have no system bus: the no-bus path. */
+/* No system bus (main points DBUS_SYSTEM_BUS_ADDRESS at nothing). */
 static void test_bluez_without_bus(void) {
     CHECK(bluez_open() == -1);
     CHECK(bluez_fd() == -1);
@@ -158,10 +160,34 @@ static void test_battery_signal_routes_by_address(void) {
     close(cap_a); close(cap_b);
 }
 
+/* A bus that accepts the connection but never answers must not stall the
+ * main loop for long: bluez_open gives up within the call timeout. */
+static void test_bluez_unresponsive_bus(void) {
+    const char *sock_path = "/tmp/test_bridge_silent_bus";
+    unlink(sock_path);
+    int lfd = socket(AF_UNIX, SOCK_STREAM, 0);
+    struct sockaddr_un a = { .sun_family = AF_UNIX };
+    snprintf(a.sun_path, sizeof(a.sun_path), "%s", sock_path);
+    bind(lfd, (struct sockaddr *)&a, sizeof(a));
+    listen(lfd, 4);                       /* connections queue; nothing ever replies */
+    setenv("DBUS_SYSTEM_BUS_ADDRESS", "unix:path=/tmp/test_bridge_silent_bus", 1);
+
+    uint64_t start = now_ms();
+    CHECK(bluez_open() == -1);
+    CHECK(now_ms() - start < 3000);
+
+    setenv("DBUS_SYSTEM_BUS_ADDRESS", "unix:path=/nonexistent", 1);
+    close(lfd);
+    unlink(sock_path);
+}
+
 int main(void) {
     log_level = LEVEL_ERROR;
+    /* Never use the host's system bus: results must not depend on where the tests run. */
+    setenv("DBUS_SYSTEM_BUS_ADDRESS", "unix:path=/nonexistent", 1);
     test_key_is_v3();
     test_bluez_without_bus();
+    test_bluez_unresponsive_bus();
     g_sock = socket(AF_INET, SOCK_DGRAM, 0);
     test_usb_attach_detach();
     test_battery_dedupe_and_reset();

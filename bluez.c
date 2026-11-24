@@ -2,12 +2,15 @@
 #include "log.h"
 
 #include <basu/sd-bus.h>
+#include <errno.h>
 #include <poll.h>
+#include <time.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
 #define BATTERY_IFACE "org.bluez.Battery1"
+#define BUS_CALL_TIMEOUT_US (500 * 1000)
 
 static sd_bus *bus;
 static int open_failed;                         /* last bluez_open failed: don't log again */
@@ -52,14 +55,43 @@ static int on_interfaces_added(sd_bus_message *m, void *userdata, sd_bus_error *
 
 static void close_bus(void) {
     if (bus) {
-        sd_bus_flush_close_unref(bus);
+        /* No flush: it would first wait for a half-open connection to finish. */
+        sd_bus_close(bus);
+        sd_bus_unref(bus);
         bus = NULL;
+    }
+}
+
+static uint64_t mono_us(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
+}
+
+/* Finish connecting (authentication + Hello) within BUS_CALL_TIMEOUT_US.
+ * sd-bus would otherwise wait up to 90 s for that inside the first call. */
+static int wait_until_ready(void) {
+    uint64_t deadline = mono_us() + BUS_CALL_TIMEOUT_US;
+    for (;;) {
+        int r = sd_bus_is_ready(bus);
+        if (r != 0) return r < 0 ? r : 0;
+        uint64_t now = mono_us();
+        if (now >= deadline) return -ETIMEDOUT;
+        r = sd_bus_process(bus, NULL);
+        if (r < 0) return r;
+        if (r > 0) continue;
+        r = sd_bus_wait(bus, deadline - now);
+        if (r < 0) return r;
     }
 }
 
 int bluez_open(void) {
     if (bus) return 0;
+    /* Every call here runs on the single main loop: the bus and bluetoothd
+     * answer in milliseconds, so give up quickly rather than stall keys. */
     int r = sd_bus_open_system(&bus);
+    if (r >= 0) r = wait_until_ready();
+    if (r >= 0) r = sd_bus_set_method_call_timeout(bus, BUS_CALL_TIMEOUT_US);
     if (r >= 0) {
         r = sd_bus_match_signal(bus, NULL, "org.bluez", NULL,
                                 "org.freedesktop.DBus.Properties", "PropertiesChanged",
