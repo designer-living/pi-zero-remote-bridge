@@ -5,26 +5,32 @@ CC = gcc
 DEFS = -DVERSION=\"$(VERSION)\"
 CFLAGS ?= -O3 -Wall -Wextra
 TARGET = remote_bridge
-SOURCE = remote_bridge.c voice.c
+SOURCE = remote_bridge.c voice.c packet.c
+HEADERS = voice.h packet.h
 TEST_BIN = tests/test_voice
+PACKET_TEST = tests/test_packet
 
 .PHONY: all clean test install uninstall
 
 all: $(TARGET)
 
-$(TARGET): $(SOURCE) voice.h
+$(TARGET): $(SOURCE) $(HEADERS)
 	$(CC) $(CFLAGS) $(DEFS) -o $(TARGET) $(SOURCE)
 
-test: tests/test_hidraw.c $(SOURCE) voice.h $(TEST_BIN)
-	$(CC) $(CFLAGS) -Wno-unused-function $(DEFS) -o tests/test_hidraw tests/test_hidraw.c voice.c
+test: tests/test_hidraw.c $(SOURCE) $(HEADERS) $(TEST_BIN) $(PACKET_TEST)
+	$(CC) $(CFLAGS) -Wno-unused-function $(DEFS) -o tests/test_hidraw tests/test_hidraw.c voice.c packet.c
 	./tests/test_hidraw
 	./$(TEST_BIN)
+	./$(PACKET_TEST)
 
 $(TEST_BIN): tests/test_voice.c voice.c voice.h
 	$(CC) $(CFLAGS) -o $(TEST_BIN) tests/test_voice.c voice.c
 
+$(PACKET_TEST): tests/test_packet.c packet.c packet.h
+	$(CC) $(CFLAGS) -o $(PACKET_TEST) tests/test_packet.c packet.c
+
 clean:
-	rm -f $(TARGET) tests/test_hidraw $(TEST_BIN)
+	rm -f $(TARGET) tests/test_hidraw $(TEST_BIN) $(PACKET_TEST)
 
 install: $(TARGET)
 	@echo "Installing remote_bridge..."
