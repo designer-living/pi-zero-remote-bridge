@@ -45,6 +45,7 @@ static int inotify_add_watch(int fd, const char *pathname, uint32_t mask) { (voi
 #include <poll.h>
 #include <time.h>
 #include "voice.h"
+#include "packet.h"
 #include <stdarg.h>
 
 #ifndef VERSION
@@ -53,19 +54,6 @@ static int inotify_add_watch(int fd, const char *pathname, uint32_t mask) { (voi
 
 #define INPUT_DIR "/dev/input"
 #define MAX_NAME 256
-
-#define PACKET_FORMAT_VERSION    2
-#define PKT_MAKE_HEADER(ver)     ((uint8_t)(((ver) & 0x0F) << 4))
-#define PKT_HEADER_VERSION(h)    (((h) >> 4) & 0x0F)
-
-/* -------- Binary packet -------- */
-struct Packet {
-    uint8_t  header;        /* upper 4 bits = format version (0-15), lower 4 bits reserved */
-    uint32_t timestamp_ms;  /* network byte order */
-    uint16_t key_code;      /* network byte order */
-    uint32_t scan_code;     /* network byte order; raw MSC_SCAN value preceding this key, 0 if none */
-    int8_t   value;         /* 0=up, 1=down, 2=repeat */
-} __attribute__((packed));
 
 /* -------- Time helper -------- */
 static uint64_t now_ms(void) {
@@ -397,26 +385,20 @@ static int find_available_mapping(int fd, const char *path) {
 }
 
 static void send_key_packet(int sock, Mapping *m, uint16_t key_code, uint32_t scan_code, int value) {
-    struct Packet pkt;
+    uint8_t pkt[PKT_KEY_LEN];
     uint32_t event_timestamp = (uint32_t)(now_ms() & 0xFFFFFFFF);
+    size_t len = packet_build_key(pkt, event_timestamp, key_code, scan_code, (int8_t)value);
 
     int send_count = (value == 0 || value == 1) ? edge_repeat_count : 1;
 
     for (int repeat = 0; repeat < send_count; repeat++) {
-        pkt.header       = PKT_MAKE_HEADER(PACKET_FORMAT_VERSION);
-        pkt.timestamp_ms = htonl(event_timestamp);
-        pkt.key_code     = htons(key_code);
-        pkt.scan_code    = htonl(scan_code);
-        pkt.value        = (int8_t)value;
-
         if (log_level >= LEVEL_TRACE) {
             char hex[sizeof(pkt) * 3 + 1];
-            hex_bytes(&pkt, sizeof(pkt), hex);
-            LOG_TRACE("Sending packet (%zu bytes): buf=[%s]\n",
-                sizeof(pkt), hex);
+            hex_bytes(pkt, len, hex);
+            LOG_TRACE("Sending packet (%zu bytes): buf=[%s]\n", len, hex);
         }
         ssize_t sent = sendto(sock,
-                              &pkt, sizeof(pkt), 0,
+                              pkt, len, 0,
                               (struct sockaddr *)&m->server_addr,
                               sizeof(struct sockaddr_in));
         if (sent < 0) {

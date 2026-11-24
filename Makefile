@@ -9,6 +9,7 @@ SOURCE = remote_bridge.c voice.c packet.c
 HEADERS = voice.h packet.h
 TEST_BIN = tests/test_voice
 PACKET_TEST = tests/test_packet
+BRIDGE_TEST = tests/test_bridge
 
 .PHONY: all clean test install uninstall
 
@@ -17,11 +18,12 @@ all: $(TARGET)
 $(TARGET): $(SOURCE) $(HEADERS)
 	$(CC) $(CFLAGS) $(DEFS) -o $(TARGET) $(SOURCE)
 
-test: tests/test_hidraw.c $(SOURCE) $(HEADERS) $(TEST_BIN) $(PACKET_TEST)
+test: tests/test_hidraw.c $(SOURCE) $(HEADERS) $(TEST_BIN) $(PACKET_TEST) $(BRIDGE_TEST)
 	$(CC) $(CFLAGS) -Wno-unused-function $(DEFS) -o tests/test_hidraw tests/test_hidraw.c voice.c packet.c
 	./tests/test_hidraw
 	./$(TEST_BIN)
 	./$(PACKET_TEST)
+	./$(BRIDGE_TEST)
 
 $(TEST_BIN): tests/test_voice.c voice.c voice.h
 	$(CC) $(CFLAGS) -o $(TEST_BIN) tests/test_voice.c voice.c
@@ -29,8 +31,11 @@ $(TEST_BIN): tests/test_voice.c voice.c voice.h
 $(PACKET_TEST): tests/test_packet.c packet.c packet.h
 	$(CC) $(CFLAGS) -o $(PACKET_TEST) tests/test_packet.c packet.c
 
+$(BRIDGE_TEST): tests/test_bridge.c $(SOURCE) $(HEADERS)
+	$(CC) $(CFLAGS) -Wno-unused-function $(DEFS) -o $(BRIDGE_TEST) tests/test_bridge.c voice.c packet.c
+
 clean:
-	rm -f $(TARGET) tests/test_hidraw $(TEST_BIN) $(PACKET_TEST)
+	rm -f $(TARGET) tests/test_hidraw $(TEST_BIN) $(PACKET_TEST) $(BRIDGE_TEST)
 
 install: $(TARGET)
 	@echo "Installing remote_bridge..."

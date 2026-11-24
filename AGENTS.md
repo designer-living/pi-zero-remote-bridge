@@ -7,7 +7,7 @@ Guidance for AI coding agents (and humans) working in this repository.
 `remote_bridge` is a small single-file C daemon that runs on a Raspberry Pi
 Zero (or any Linux box) with an IR/Bluetooth remote receiver attached. It
 reads `EV_KEY` events from `/dev/input/event*`, matches devices by exact
-name, and forwards each key event as a compact 12-byte binary UDP packet to
+name, and forwards each key event as a compact 13-byte binary UDP packet to
 a configured server. It handles hotplug (USB/BT dongles connecting and
 disconnecting) via `inotify` and can service multiple remotes at once, each
 mapped to its own destination IP/port.
@@ -15,10 +15,10 @@ mapped to its own destination IP/port.
 **This repo is the sender half of a pair.** The receiving end — the service
 that listens on the UDP port and decodes packets into actions — lives in
 [designer-living/media-control-gateway](https://github.com/designer-living/media-control-gateway).
-When changing the wire format (`struct Packet` / `PACKET_FORMAT_VERSION` in
-`remote_bridge.c`), the two repos must be kept in sync — bump
-`PACKET_FORMAT_VERSION` and check that the gateway's decoder handles the new
-header correctly.
+When changing the wire format (`packet.h` / `packet.c`), the two repos must
+be kept in sync. A new message kind is a new `type` within the current
+version; a changed layout bumps `BRIDGE_PKT_VERSION`. Ship the gateway's
+decoder first, then the bridge.
 
 ## Build
 
@@ -34,11 +34,18 @@ separate lint step; `CFLAGS` already includes `-Wall -Wextra` (see
 
 ## Testing / verification
 
-`make test` builds and runs `tests/test_hidraw.c`, which unit-tests the
-HID report-descriptor walker, hidraw report parser and app-button scan-code
-mapping (it `#include`s
-`remote_bridge.c` with `REMOTE_BRIDGE_TEST` defined, which hides `main`).
-Everything else talks to real kernel input devices and a real network
+`make test` builds and runs the unit tests:
+- `tests/test_hidraw.c` — HID report-descriptor walker, hidraw report
+  parser and app-button scan-code mapping.
+- `tests/test_voice.c` — voice profiles and voice packet builders.
+- `tests/test_packet.c` — v3 key/status encoding and Bluetooth address
+  helpers.
+- `tests/test_bridge.c` — what the bridge sends to the gateway, read back
+  from a UDP socket on 127.0.0.1.
+
+`test_hidraw.c` and `test_bridge.c` `#include` `remote_bridge.c` with
+`REMOTE_BRIDGE_TEST` defined, which hides `main`. Everything else talks to
+real kernel input devices and a real network
 socket, so verification is manual:
 
 ```bash
@@ -118,17 +125,14 @@ libc). The flow:
    Netflix, `A1` Amazon Video, `A3` App Button, `A4` Amazon Music), logged at
    TRACE. Needs the udev `hidraw` rule so the
    `input` group can read the node.
-5. **Wire format** — `struct Packet` (packed, 12 bytes):
-   - `header` (1 byte): upper 4 bits = `PACKET_FORMAT_VERSION`, lower 4
-     bits reserved. Bump the version and update both sides if you change
-     the layout below.
-   - `timestamp_ms` (4 bytes, network order): low 32 bits of a monotonic
-     ms clock.
-   - `key_code` (2 bytes, network order): the evdev key code.
-   - `scan_code` (4 bytes, network order): the raw `MSC_SCAN` value that
-     preceded this key event, or `0` if none was seen. Lets the gateway
-     disambiguate devices/buttons that share `KEY_UNKNOWN` (240).
-   - `value` (1 byte): `0` = up, `1` = down, `2` = repeat.
+5. **Wire format** — version 3, built by `packet.c` (big-endian):
+   - Prefix (6 bytes): `header` (upper 4 bits = `BRIDGE_PKT_VERSION`, lower
+     4 bits reserved 0), `timestamp_ms` (u32, low 32 bits of a monotonic ms
+     clock), `type` (u8: 1 = key).
+   - Key message (`type` 1, 13 bytes): `key_code` (u16, the evdev key
+     code), `scan_code` (u32, the raw `MSC_SCAN` value that preceded this
+     key event, or `0` — lets the gateway disambiguate buttons that share
+     `KEY_UNKNOWN` (240)), `value` (i8: `0` = up, `1` = down, `2` = repeat).
 6. **Logging**: `log_print` / `LOG_ERROR|INFO|DEBUG|TRACE` macros print UTC
    timestamps to stdout (captured by journald/OpenRC, not written to a file
    directly by the program). Level is set via `LOG_LEVEL` in the config

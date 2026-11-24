@@ -3,7 +3,7 @@
 `remote_bridge` is a lightweight daemon (built for the Raspberry Pi Zero, but
 runs on any Linux box) that reads key events from an IR/Bluetooth remote
 control via `/dev/input` and forwards them as compact UDP packets to a
-server on your network. It handles hotplug automatically, so a remote can
+server on your network (wire format: see `AGENTS.md`). It handles hotplug automatically, so a remote can
 disconnect and reconnect without restarting the service.
 
 This repo is the **sender** half of a pair. The **receiver** — the service
