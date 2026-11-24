@@ -103,24 +103,25 @@ The daemon is `remote_bridge.c`, with small modules beside it:
    (`find_available_mapping`). Matching runs in two passes — mappings that
    set `id_match` first, so two identically-named remotes each claim their
    own line (`id_match` must be a substring of the device's `phys` or
-   `uniq`), then unfiltered mappings. Matched devices' fds are stored on
-   the mapping.
+   `uniq`), then unfiltered mappings. A matched device is taken over by
+   `remote_attached`, which reports it connected (see 5).
 3. **Hotplug**: an `inotify` watch on `/dev/input` catches `IN_CREATE` /
    `IN_ATTRIB` / `IN_MOVED_TO` (device appears — re-run the matching logic)
-   and `IN_DELETE` (device removed — clear the mapping's fd). Devices can
-   also disconnect mid-read (`POLLHUP`/`POLLERR`, EOF, or `ENODEV`), which is
-   handled the same way so a remote can drop and reconnect without a
-   restart.
-4. **Event loop**: a single `poll()` over all currently-open mapping fds
-   plus the inotify fd. Each mapping tracks the most recent `EV_MSC`/
+   and `IN_DELETE` (device removed). Devices can also disconnect mid-read
+   (`POLLHUP`/`POLLERR`, EOF, or `ENODEV`). Every removal goes through
+   `remote_detached`, which releases the device and reports it
+   disconnected, so a remote can drop and reconnect without a restart.
+4. **Event loop**: a single `poll()` over all currently-open mapping fds,
+   the inotify fd, and the system D-Bus fd while it's open (battery levels,
+   see 5). Each mapping tracks the most recent `EV_MSC`/
    `MSC_SCAN` value it has seen (`pending_scan_code`) — devices that can't
    express a button as a standard evdev keycode (e.g. some Bluetooth remotes
    report `KEY_UNKNOWN` for several distinct buttons) still emit a unique
    raw scan code just before the `EV_KEY` event, so this lets those buttons
    be told apart downstream. For each `EV_KEY` event, optionally throttles
    `value == 2` (repeat) events per-mapping using `repeat_delay_ms`, then
-   builds a `struct Packet` (consuming and clearing `pending_scan_code`) and
-   `sendto()`s it to that mapping's server.
+   builds a v3 key message (consuming `pending_scan_code`) and `sendto()`s
+   it to that mapping's server.
    **App buttons from hidraw** (e.g. the Fire TV remote's Netflix, Amazon
    Video, App Button, Amazon Music) never reach evdev: they're an array
    input report on a usage page hid-input doesn't turn into keys (Fire TV:
@@ -141,11 +142,26 @@ The daemon is `remote_bridge.c`, with small modules beside it:
 5. **Wire format** — version 3, built by `packet.c` (big-endian):
    - Prefix (6 bytes): `header` (upper 4 bits = `BRIDGE_PKT_VERSION`, lower
      4 bits reserved 0), `timestamp_ms` (u32, low 32 bits of a monotonic ms
-     clock), `type` (u8: 1 = key).
+     clock), `type` (u8: 1 = key, 2 = status).
    - Key message (`type` 1, 13 bytes): `key_code` (u16, the evdev key
      code), `scan_code` (u32, the raw `MSC_SCAN` value that preceded this
      key event, or `0` — lets the gateway disambiguate buttons that share
      `KEY_UNKNOWN` (240)), `value` (i8: `0` = up, `1` = down, `2` = repeat).
+     Down/up are sent `EDGE_REPEAT_COUNT` times.
+   - Status message (`type` 2, 12 bytes): `kind` (u8: 1 = connected, 2 =
+     disconnected, 3 = battery), `battery` (u8: 0–100, `0xFF` = unknown),
+     `session_ms` (u32: on disconnected, how long the connection lasted;
+     else 0). Sent once each, to the mapping's server: connected on attach,
+     disconnected on detach, battery when the level changes (at most once
+     per value per connection).
+   - Battery levels come from `bluez.c`: on attach of a Bluetooth device
+     (`uniq` is a `xx:xx:xx:xx:xx:xx` address) it reads
+     `org.bluez.Battery1.Percentage` from bluetoothd, and later changes
+     arrive as D-Bus signals matched to the mapping by address. It only
+     reads what bluetoothd already holds, never anything that makes the
+     radio talk to the remote, so it costs the remote no battery. If the
+     system bus is unavailable, status is still sent with battery unknown
+     and the bus is retried on the next attach.
 6. **Logging**: `log_print` / `LOG_ERROR|INFO|DEBUG|TRACE` macros print UTC
    timestamps to stdout (captured by journald/OpenRC, not written to a file
    directly by the program). Level is set via `LOG_LEVEL` in the config

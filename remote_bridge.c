@@ -276,6 +276,11 @@ typedef struct {
     uint64_t mic_opened_ms;
     uint32_t frames;
     int hid_err_logged;             /* hidraw lookup/open error already logged this connect */
+    /* Connection / battery status reported to the gateway */
+    char bt_suffix[32];             /* BlueZ object path suffix ("dev_XX_.."), "" = not Bluetooth */
+    uint8_t battery;                /* last known battery %, BATTERY_UNKNOWN if none */
+    uint8_t battery_sent;           /* last battery % sent in this connection */
+    uint64_t connected_ms;          /* now_ms() when the device attached */
 } Mapping;
 
 static Mapping mappings[MAX_MAPPINGS];
@@ -307,6 +312,10 @@ static int add_mapping(const char *name, const char *ip, int port, const char *i
     m->voice_hidfd = -1;
     m->mic_open = 0;
     m->hid_err_logged = 0;
+    m->bt_suffix[0] = '\0';
+    m->battery = BATTERY_UNKNOWN;
+    m->battery_sent = BATTERY_UNKNOWN;
+    m->connected_ms = 0;
 
     memset(&m->server_addr, 0, sizeof(m->server_addr));
     m->server_addr.sin_family = AF_INET;
@@ -319,7 +328,7 @@ static int add_mapping(const char *name, const char *ip, int port, const char *i
     return 0;
 }
 
-static int find_available_mapping(int fd, const char *path) {
+static int find_available_mapping(int fd, const char *path, char *uniq_out, size_t uniq_cap) {
     char name[MAX_NAME] = {0};
     char phys[64] = {0};
     char uniq[64] = {0};
@@ -365,6 +374,7 @@ static int find_available_mapping(int fd, const char *path) {
 
             LOG_INFO("Matched device: %s at %s (phys \"%s\" uniq \"%s\") for mapping %d\n",
                 name, path, phys, uniq, i);
+            snprintf(uniq_out, uniq_cap, "%s", uniq);
             return i;
         }
     }
@@ -627,8 +637,6 @@ static int load_config(const char *filename) {
     return 0;
 }
 
-#ifndef REMOTE_BRIDGE_TEST
-
 /* Open the hidraw node of a voice-enabled mapping's matched evdev device.
  * Failure leaves voice_hidfd = -1, and the trigger key then behaves as a normal key. */
 static void voice_open_hidraw(Mapping *m) {
@@ -777,6 +785,86 @@ static void voice_enforce_cap(int sock) {
 }
 
 /* -------- Main -------- */
+/* -------- Connection / battery status -------- */
+static int g_sock = -1;   /* UDP socket, for status sent from D-Bus callbacks */
+
+static void send_status(int sock, Mapping *m, uint8_t kind, uint8_t battery, uint32_t session_ms) {
+    uint8_t pkt[PKT_STATUS_LEN];
+    size_t len = packet_build_status(pkt, (uint32_t)(now_ms() & 0xFFFFFFFF), kind, battery, session_ms);
+    static const char *const kinds[] = { "?", "connected", "disconnected", "battery" };
+    char level[16];
+    if (battery == BATTERY_UNKNOWN) snprintf(level, sizeof(level), "unknown");
+    else snprintf(level, sizeof(level), "%u%%", battery);
+    LOG_INFO("Status \"%s\": %s (battery %s)\n", m->name, kind <= STATUS_BATTERY ? kinds[kind] : "?", level);
+    if (sendto(sock, pkt, len, 0, (struct sockaddr *)&m->server_addr, sizeof(struct sockaddr_in)) < 0) {
+        LOG_ERROR("Failed to send status packet: %s\n", strerror(errno));
+    }
+}
+
+/* A mapping's evdev device appeared: take it over and report it connected. */
+static void remote_attached(int sock, int m_idx, int fd, const char *path, const char *uniq) {
+    Mapping *m = &mappings[m_idx];
+    m->evfd = fd;
+    snprintf(m->dev_path, sizeof(m->dev_path), "%s", path);
+    m->hid_err_logged = 0;
+    m->hid_unsupported = 0;
+    m->hid_open_err_logged = 0;
+    voice_open_hidraw(m);
+
+    if (bt_dev_suffix(uniq, m->bt_suffix, sizeof(m->bt_suffix)) < 0) m->bt_suffix[0] = '\0';
+    m->connected_ms = now_ms();
+    m->battery = BATTERY_UNKNOWN;
+    m->battery_sent = BATTERY_UNKNOWN;
+    if (m->bt_suffix[0] && bluez_open() == 0) {
+        int pct = bluez_read_battery(m->bt_suffix);
+        if (pct >= 0) m->battery = (uint8_t)pct;
+    }
+    send_status(sock, m, STATUS_CONNECTED, m->battery, 0);
+    m->battery_sent = m->battery;
+}
+
+/* A mapping lost its evdev device: release it and report how long it lasted. */
+static void remote_detached(int sock, Mapping *m, const char *why) {
+    LOG_INFO("Remote \"%s\" disconnected (%s)\n", m->name, why);
+    voice_close(m, sock, VOICE_END_DISCONNECTED);
+    if (m->evfd >= 0) close(m->evfd);
+    m->evfd = -1;
+    m->dev_path[0] = '\0';
+    uint64_t session = now_ms() - m->connected_ms;
+    send_status(sock, m, STATUS_DISCONNECTED, m->battery,
+                session > UINT32_MAX ? UINT32_MAX : (uint32_t)session);
+}
+
+/* A new battery level for an attached remote; sent once per change per connection. */
+static void remote_battery(int sock, Mapping *m, int pct) {
+    if (pct < 0 || pct > 100 || m->evfd < 0) return;
+    m->battery = (uint8_t)pct;
+    if (m->battery == m->battery_sent) return;
+    send_status(sock, m, STATUS_BATTERY, m->battery, 0);
+    m->battery_sent = m->battery;
+}
+
+/* Give a battery level reported for a BlueZ device path to the attached remote(s) at that address. */
+static void route_battery(int sock, const char *object_path, int pct) {
+    for (int i = 0; i < num_mappings; i++) {
+        Mapping *m = &mappings[i];
+        if (m->evfd >= 0 && m->bt_suffix[0] && bt_path_has_suffix(object_path, m->bt_suffix)) {
+            remote_battery(sock, m, pct);
+        }
+    }
+}
+
+static void on_bluez_battery(const char *object_path) {
+    for (int i = 0; i < num_mappings; i++) {
+        Mapping *m = &mappings[i];
+        if (m->evfd >= 0 && m->bt_suffix[0] && bt_path_has_suffix(object_path, m->bt_suffix)) {
+            route_battery(g_sock, object_path, bluez_read_battery_at(object_path));
+            return;
+        }
+    }
+}
+
+#ifndef REMOTE_BRIDGE_TEST
 int main(int argc, char *argv[]) {
     if (argc >= 3 && strcmp(argv[1], "-c") == 0) {
         if (load_config(argv[2]) < 0) return 1;
@@ -826,6 +914,9 @@ int main(int argc, char *argv[]) {
         perror("socket");
         return 1;
     }
+    g_sock = sock;
+    bluez_set_battery_handler(on_bluez_battery);
+    bluez_open();
 
     /* inotify for /dev/input */
     int ifd = inotify_init1(IN_NONBLOCK);
@@ -859,15 +950,10 @@ int main(int argc, char *argv[]) {
                      INPUT_DIR "/%s", ent->d_name);
             int fd = open(path, O_RDONLY | O_NONBLOCK);
             if (fd >= 0) {
-                int m_idx = find_available_mapping(fd, path);
+                char uniq[64];
+                int m_idx = find_available_mapping(fd, path, uniq, sizeof(uniq));
                 if (m_idx >= 0) {
-                    mappings[m_idx].evfd = fd;
-                    strncpy(mappings[m_idx].dev_path, path, sizeof(mappings[m_idx].dev_path) - 1);
-                    mappings[m_idx].dev_path[sizeof(mappings[m_idx].dev_path) - 1] = '\0';
-                    mappings[m_idx].hid_err_logged = 0;
-                    mappings[m_idx].hid_unsupported = 0;
-                    mappings[m_idx].hid_open_err_logged = 0;
-                    voice_open_hidraw(&mappings[m_idx]);
+                    remote_attached(sock, m_idx, fd, path, uniq);
                 } else {
                     close(fd);
                 }
@@ -884,7 +970,7 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    struct pollfd fds[3 * MAX_MAPPINGS + 1];
+    struct pollfd fds[3 * MAX_MAPPINGS + 2];
     int mapping_indices[MAX_MAPPINGS];
     int hid_indices[MAX_MAPPINGS];
     int vhid_indices[MAX_MAPPINGS];
@@ -931,6 +1017,16 @@ int main(int argc, char *argv[]) {
             }
         }
 
+        bluez_process();   /* drain anything queued before sleeping */
+        int bus_idx = -1;
+        if (bluez_fd() >= 0) {
+            bus_idx = nfds;
+            fds[nfds++] = (struct pollfd){
+                .fd = bluez_fd(),
+                .events = bluez_poll_events()
+            };
+        }
+
         int ret = poll(fds, nfds, voice_next_timeout_ms());
         if (ret < 0) {
             if (errno == EINTR)
@@ -946,11 +1042,7 @@ int main(int argc, char *argv[]) {
 
             /* Disconnect: kernel raises POLLHUP/POLLERR on BT HID removal */
             if (revents & (POLLHUP | POLLERR)) {
-                LOG_INFO("Remote \"%s\" disconnected (POLLHUP/POLLERR)\n", mappings[m_idx].name);
-                voice_close(&mappings[m_idx], sock, VOICE_END_DISCONNECTED);
-                close(mappings[m_idx].evfd);
-                mappings[m_idx].evfd = -1;
-                mappings[m_idx].dev_path[0] = '\0';
+                remote_detached(sock, &mappings[m_idx], "POLLHUP/POLLERR");
             } else if (revents & POLLIN) {
                 while (1) {
                     ssize_t n = read(mappings[m_idx].evfd, &ev, sizeof(ev));
@@ -958,12 +1050,7 @@ int main(int argc, char *argv[]) {
 
                     if (n <= 0) {
                         if (n == 0 || errno == ENODEV) {
-                            LOG_INFO("Remote \"%s\" disconnected (%s)\n",
-                                     mappings[m_idx].name, n == 0 ? "EOF" : "ENODEV");
-                            voice_close(&mappings[m_idx], sock, VOICE_END_DISCONNECTED);
-                            close(mappings[m_idx].evfd);
-                            mappings[m_idx].evfd = -1;
-                            mappings[m_idx].dev_path[0] = '\0';
+                            remote_detached(sock, &mappings[m_idx], n == 0 ? "EOF" : "ENODEV");
                             break;
                         }
                         perror("read evdev");
@@ -972,10 +1059,7 @@ int main(int argc, char *argv[]) {
 
                     if (n != sizeof(ev)) {
                         LOG_ERROR("Short read from evdev: expected %zu, got %zd. Closing device.\n", sizeof(ev), n);
-                        voice_close(&mappings[m_idx], sock, VOICE_END_DISCONNECTED);
-                        close(mappings[m_idx].evfd);
-                        mappings[m_idx].evfd = -1;
-                        mappings[m_idx].dev_path[0] = '\0';
+                        remote_detached(sock, &mappings[m_idx], "short read");
                         break;
                     }
 
@@ -1026,6 +1110,9 @@ int main(int argc, char *argv[]) {
         }
         voice_enforce_cap(sock);
 
+        /* ---- D-Bus (battery levels) ---- */
+        if (bus_idx >= 0 && fds[bus_idx].revents) bluez_process();
+
         /* ---- inotify events ---- */
         if (fds[ifd_idx].revents & POLLIN) {
             char buf[4096];
@@ -1058,11 +1145,9 @@ int main(int argc, char *argv[]) {
                         if ((ie->mask & IN_DELETE)) {
                             for (int i = 0; i < num_mappings; i++) {
                                 if (mappings[i].evfd >= 0 && strcmp(path, mappings[i].dev_path) == 0) {
-                                    LOG_INFO("Remote \"%s\" disconnected (inotify: %s)\n", mappings[i].name, path);
-                                    voice_close(&mappings[i], sock, VOICE_END_DISCONNECTED);
-                                    close(mappings[i].evfd);
-                                    mappings[i].evfd = -1;
-                                    mappings[i].dev_path[0] = '\0';
+                                    char why[300];
+                                    snprintf(why, sizeof(why), "inotify: %s", path);
+                                    remote_detached(sock, &mappings[i], why);
                                 }
                             }
                         }
@@ -1070,17 +1155,10 @@ int main(int argc, char *argv[]) {
                         if ((ie->mask & (IN_CREATE | IN_ATTRIB | IN_MOVED_TO))) {
                             int fd = open(path, O_RDONLY | O_NONBLOCK);
                             if (fd >= 0) {
-                                int m_idx = find_available_mapping(fd, path);
+                                char uniq[64];
+                                int m_idx = find_available_mapping(fd, path, uniq, sizeof(uniq));
                                 if (m_idx >= 0) {
-                                    mappings[m_idx].evfd = fd;
-                                    strncpy(mappings[m_idx].dev_path, path, sizeof(mappings[m_idx].dev_path) - 1);
-                                    mappings[m_idx].dev_path[sizeof(mappings[m_idx].dev_path) - 1] = '\0';
-                                    mappings[m_idx].hid_err_logged = 0;
-                                    mappings[m_idx].hid_unsupported = 0;
-                                    mappings[m_idx].hid_open_err_logged = 0;
-                    mappings[m_idx].hid_unsupported = 0;
-                    mappings[m_idx].hid_open_err_logged = 0;
-                                    voice_open_hidraw(&mappings[m_idx]);
+                                    remote_attached(sock, m_idx, fd, path, uniq);
                                 } else {
                                     close(fd);
                                 }
