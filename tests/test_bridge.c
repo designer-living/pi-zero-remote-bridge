@@ -54,9 +54,20 @@ static void test_key_is_v3(void) {
     close(cap);
 }
 
+/* CI and the build container have no system bus: the no-bus path. */
+static void test_bluez_without_bus(void) {
+    CHECK(bluez_open() == -1);
+    CHECK(bluez_fd() == -1);
+    CHECK(bluez_poll_events() == 0);
+    bluez_process();
+    CHECK(bluez_read_battery("dev_18_BF_1C_D3_0B_A0") == -1);
+    CHECK(bluez_read_battery_at("/org/bluez/hci0/dev_18_BF_1C_D3_0B_A0") == -1);
+}
+
 int main(void) {
     log_level = LEVEL_ERROR;
     test_key_is_v3();
+    test_bluez_without_bus();
     if (failures) { printf("%d failure(s)\n", failures); return 1; }
     printf("all bridge tests passed\n");
     return 0;

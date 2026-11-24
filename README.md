@@ -84,9 +84,14 @@ tail -f /var/log/remote-bridge.log
 ## Building from Source
 
 ### 1. Build the Application
+Needs `gcc`, `make`, `pkg-config` and basu (the D-Bus library used to read
+remote battery levels). On Alpine:
 ```bash
+apk add make gcc musl-dev linux-headers basu-dev basu-static libcap-dev libcap-static pkgconf
 make
 ```
+basu isn't packaged for Debian/Raspberry Pi OS; use the pre-built packages
+there, or build in an Alpine container (see `AGENTS.md`).
 
 ### 2. Find Your Remote Name
 Run evtest to find your IR receiver's exact name:

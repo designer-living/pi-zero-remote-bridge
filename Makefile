@@ -5,8 +5,11 @@ CC = gcc
 DEFS = -DVERSION=\"$(VERSION)\"
 CFLAGS ?= -O3 -Wall -Wextra
 TARGET = remote_bridge
-SOURCE = remote_bridge.c voice.c packet.c
-HEADERS = voice.h packet.h
+SOURCE = remote_bridge.c voice.c packet.c bluez.c
+HEADERS = voice.h packet.h log.h bluez.h
+# basu (sd-bus) for reading battery levels from BlueZ; linked statically in releases
+BASU_CFLAGS := $(shell pkg-config --cflags basu)
+BASU_LIBS := $(shell pkg-config --static --libs basu)
 TEST_BIN = tests/test_voice
 PACKET_TEST = tests/test_packet
 BRIDGE_TEST = tests/test_bridge
@@ -16,10 +19,10 @@ BRIDGE_TEST = tests/test_bridge
 all: $(TARGET)
 
 $(TARGET): $(SOURCE) $(HEADERS)
-	$(CC) $(CFLAGS) $(DEFS) -o $(TARGET) $(SOURCE)
+	$(CC) $(CFLAGS) $(BASU_CFLAGS) $(DEFS) -o $(TARGET) $(SOURCE) $(BASU_LIBS)
 
 test: tests/test_hidraw.c $(SOURCE) $(HEADERS) $(TEST_BIN) $(PACKET_TEST) $(BRIDGE_TEST)
-	$(CC) $(CFLAGS) -Wno-unused-function $(DEFS) -o tests/test_hidraw tests/test_hidraw.c voice.c packet.c
+	$(CC) $(CFLAGS) $(BASU_CFLAGS) -Wno-unused-function $(DEFS) -o tests/test_hidraw tests/test_hidraw.c voice.c packet.c bluez.c $(BASU_LIBS)
 	./tests/test_hidraw
 	./$(TEST_BIN)
 	./$(PACKET_TEST)
@@ -32,7 +35,7 @@ $(PACKET_TEST): tests/test_packet.c packet.c packet.h
 	$(CC) $(CFLAGS) -o $(PACKET_TEST) tests/test_packet.c packet.c
 
 $(BRIDGE_TEST): tests/test_bridge.c $(SOURCE) $(HEADERS)
-	$(CC) $(CFLAGS) -Wno-unused-function $(DEFS) -o $(BRIDGE_TEST) tests/test_bridge.c voice.c packet.c
+	$(CC) $(CFLAGS) $(BASU_CFLAGS) -Wno-unused-function $(DEFS) -o $(BRIDGE_TEST) tests/test_bridge.c voice.c packet.c bluez.c $(BASU_LIBS)
 
 clean:
 	rm -f $(TARGET) tests/test_hidraw $(TEST_BIN) $(PACKET_TEST) $(BRIDGE_TEST)

@@ -43,7 +43,7 @@ jobs:
           docker run --rm --platform ${{ matrix.platform }} \
             -v "$PWD:/work" -w /work \
             alpine:latest \
-            sh -c "apk add --no-cache make gcc musl-dev linux-headers && \
+            sh -c "apk add --no-cache make gcc musl-dev linux-headers basu-dev basu-static libcap-dev libcap-static pkgconf && \
                    make VERSION=${{ steps.vars.outputs.VERSION }} CFLAGS='-static -O3 -Wall -Wextra'"
 
       - name: Set up Signing Keys for nFPM

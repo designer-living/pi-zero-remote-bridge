@@ -28,8 +28,19 @@ make VERSION=1.2.3            # embed a specific version string
 make clean
 ```
 
-Requires `gcc` and standard Linux headers (`linux/input.h`). There is no
-separate lint step; `CFLAGS` already includes `-Wall -Wextra` (see
+Requires `gcc`, standard Linux headers (`linux/input.h`), `pkg-config` and
+basu (standalone sd-bus, for reading battery levels from BlueZ). On Alpine:
+`apk add make gcc musl-dev linux-headers basu-dev basu-static libcap-dev
+libcap-static pkgconf`. Releases link basu statically, so the shipped binary
+has no runtime dependencies. Without a local toolchain, build and test in a
+container:
+
+```bash
+docker run --rm -v "$PWD:/work" -w /work alpine:latest sh -c \
+  "apk add -q make gcc musl-dev linux-headers basu-dev basu-static libcap-dev libcap-static pkgconf && make && make test"
+```
+
+There is no separate lint step; `CFLAGS` already includes `-Wall -Wextra` (see
 `Makefile`) — treat new warnings as bugs to fix.
 
 ## Testing / verification
@@ -74,8 +85,10 @@ the same on GitHub release creation, then packages the static binaries with
 
 ## Architecture
 
-Everything lives in `remote_bridge.c` (single file, no dependencies beyond
-libc). The flow:
+The daemon is `remote_bridge.c`, with small modules beside it:
+`voice.c` (voice remotes), `packet.c` (the gateway wire format),
+`bluez.c` (battery levels from bluetoothd over D-Bus, via basu) and
+`log.h` (the shared logger). The flow:
 
 1. **Config loading** (`load_config` / CLI args) builds a list of
    `Mapping` structs (`mappings[]`, max `MAX_MAPPINGS = 32`), each with a

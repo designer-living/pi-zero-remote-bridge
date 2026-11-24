@@ -46,6 +46,8 @@ static int inotify_add_watch(int fd, const char *pathname, uint32_t mask) { (voi
 #include <time.h>
 #include "voice.h"
 #include "packet.h"
+#include "log.h"
+#include "bluez.h"
 #include <stdarg.h>
 
 #ifndef VERSION
@@ -63,19 +65,11 @@ static uint64_t now_ms(void) {
            ts.tv_nsec / 1000000ULL;
 }
 
-enum {
-    LEVEL_ALWAYS = -1,
-    LEVEL_ERROR = 0,
-    LEVEL_INFO,
-    LEVEL_DEBUG,
-    LEVEL_TRACE
-};
-
-static int log_level = LEVEL_INFO;
+int log_level = LEVEL_INFO;
 static int edge_repeat_count = 1;
 
 /* -------- Logging helper with UTC timestamp -------- */
-static void log_print(int level, const char *level_name, const char *fmt, ...) {
+void log_print(int level, const char *level_name, const char *fmt, ...) {
     if (level != LEVEL_ALWAYS && level > log_level) return;
 
     struct timespec ts;
@@ -97,12 +91,6 @@ static void log_print(int level, const char *level_name, const char *fmt, ...) {
     va_end(args);
     fflush(stdout);
 }
-
-#define LOG_ALWAYS(fmt, ...) log_print(LEVEL_ALWAYS, "ALWAYS", fmt, ##__VA_ARGS__)
-#define LOG_ERROR(fmt, ...) log_print(LEVEL_ERROR, "ERROR", fmt, ##__VA_ARGS__)
-#define LOG_INFO(fmt, ...)  log_print(LEVEL_INFO,  "INFO",  fmt, ##__VA_ARGS__)
-#define LOG_DEBUG(fmt, ...) log_print(LEVEL_DEBUG, "DEBUG", fmt, ##__VA_ARGS__)
-#define LOG_TRACE(fmt, ...) log_print(LEVEL_TRACE, "TRACE", fmt, ##__VA_ARGS__)
 
 /* Format len bytes at buf as "XX XX XX ..." into out (must be >= len*3+1 bytes) */
 static void hex_bytes(const void *buf, size_t len, char *out) {
