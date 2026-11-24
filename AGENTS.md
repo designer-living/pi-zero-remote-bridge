@@ -7,7 +7,7 @@ Guidance for AI coding agents (and humans) working in this repository.
 `remote_bridge` is a small single-file C daemon that runs on a Raspberry Pi
 Zero (or any Linux box) with an IR/Bluetooth remote receiver attached. It
 reads `EV_KEY` events from `/dev/input/event*`, matches devices by exact
-name, and forwards each key event as a compact 12-byte binary UDP packet to
+name, and forwards each key event as a compact 13-byte binary UDP packet to
 a configured server. It handles hotplug (USB/BT dongles connecting and
 disconnecting) via `inotify` and can service multiple remotes at once, each
 mapped to its own destination IP/port.
@@ -15,10 +15,10 @@ mapped to its own destination IP/port.
 **This repo is the sender half of a pair.** The receiving end — the service
 that listens on the UDP port and decodes packets into actions — lives in
 [designer-living/media-control-gateway](https://github.com/designer-living/media-control-gateway).
-When changing the wire format (`struct Packet` / `PACKET_FORMAT_VERSION` in
-`remote_bridge.c`), the two repos must be kept in sync — bump
-`PACKET_FORMAT_VERSION` and check that the gateway's decoder handles the new
-header correctly.
+When changing the wire format (`packet.h` / `packet.c`), the two repos must
+be kept in sync. A new message kind is a new `type` within the current
+version; a changed layout bumps `BRIDGE_PKT_VERSION`. Ship the gateway's
+decoder first, then the bridge.
 
 ## Build
 
@@ -28,17 +28,35 @@ make VERSION=1.2.3            # embed a specific version string
 make clean
 ```
 
-Requires `gcc` and standard Linux headers (`linux/input.h`). There is no
-separate lint step; `CFLAGS` already includes `-Wall -Wextra` (see
+Requires `gcc`, standard Linux headers (`linux/input.h`), `pkg-config` and
+basu (standalone sd-bus, for reading battery levels from BlueZ). On Alpine:
+`apk add make gcc musl-dev linux-headers basu-dev basu-static libcap-dev
+libcap-static pkgconf`. Releases link basu statically, so the shipped binary
+has no runtime dependencies. Without a local toolchain, build and test in a
+container:
+
+```bash
+docker run --rm -v "$PWD:/work" -w /work alpine:latest sh -c \
+  "apk add -q make gcc musl-dev linux-headers basu-dev basu-static libcap-dev libcap-static pkgconf && make && make test"
+```
+
+There is no separate lint step; `CFLAGS` already includes `-Wall -Wextra` (see
 `Makefile`) — treat new warnings as bugs to fix.
 
 ## Testing / verification
 
-`make test` builds and runs `tests/test_hidraw.c`, which unit-tests the
-HID report-descriptor walker, hidraw report parser and app-button scan-code
-mapping (it `#include`s
-`remote_bridge.c` with `REMOTE_BRIDGE_TEST` defined, which hides `main`).
-Everything else talks to real kernel input devices and a real network
+`make test` builds and runs the unit tests:
+- `tests/test_hidraw.c` — HID report-descriptor walker, hidraw report
+  parser and app-button scan-code mapping.
+- `tests/test_voice.c` — voice profiles and voice packet builders.
+- `tests/test_packet.c` — v3 key/status encoding and Bluetooth address
+  helpers.
+- `tests/test_bridge.c` — what the bridge sends to the gateway, read back
+  from a UDP socket on 127.0.0.1.
+
+`test_hidraw.c` and `test_bridge.c` `#include` `remote_bridge.c` with
+`REMOTE_BRIDGE_TEST` defined, which hides `main`. Everything else talks to
+real kernel input devices and a real network
 socket, so verification is manual:
 
 ```bash
@@ -67,8 +85,10 @@ the same on GitHub release creation, then packages the static binaries with
 
 ## Architecture
 
-Everything lives in `remote_bridge.c` (single file, no dependencies beyond
-libc). The flow:
+The daemon is `remote_bridge.c`, with small modules beside it:
+`voice.c` (voice remotes), `packet.c` (the gateway wire format),
+`bluez.c` (battery levels from bluetoothd over D-Bus, via basu) and
+`log.h` (the shared logger). The flow:
 
 1. **Config loading** (`load_config` / CLI args) builds a list of
    `Mapping` structs (`mappings[]`, max `MAX_MAPPINGS = 32`), each with a
@@ -83,24 +103,25 @@ libc). The flow:
    (`find_available_mapping`). Matching runs in two passes — mappings that
    set `id_match` first, so two identically-named remotes each claim their
    own line (`id_match` must be a substring of the device's `phys` or
-   `uniq`), then unfiltered mappings. Matched devices' fds are stored on
-   the mapping.
+   `uniq`), then unfiltered mappings. A matched device is taken over by
+   `remote_attached`, which reports it connected (see 5).
 3. **Hotplug**: an `inotify` watch on `/dev/input` catches `IN_CREATE` /
    `IN_ATTRIB` / `IN_MOVED_TO` (device appears — re-run the matching logic)
-   and `IN_DELETE` (device removed — clear the mapping's fd). Devices can
-   also disconnect mid-read (`POLLHUP`/`POLLERR`, EOF, or `ENODEV`), which is
-   handled the same way so a remote can drop and reconnect without a
-   restart.
-4. **Event loop**: a single `poll()` over all currently-open mapping fds
-   plus the inotify fd. Each mapping tracks the most recent `EV_MSC`/
+   and `IN_DELETE` (device removed). Devices can also disconnect mid-read
+   (`POLLHUP`/`POLLERR`, EOF, or `ENODEV`). Every removal goes through
+   `remote_detached`, which releases the device and reports it
+   disconnected, so a remote can drop and reconnect without a restart.
+4. **Event loop**: a single `poll()` over all currently-open mapping fds,
+   the inotify fd, and the system D-Bus fd while it's open (battery levels,
+   see 5). Each mapping tracks the most recent `EV_MSC`/
    `MSC_SCAN` value it has seen (`pending_scan_code`) — devices that can't
    express a button as a standard evdev keycode (e.g. some Bluetooth remotes
    report `KEY_UNKNOWN` for several distinct buttons) still emit a unique
    raw scan code just before the `EV_KEY` event, so this lets those buttons
    be told apart downstream. For each `EV_KEY` event, optionally throttles
    `value == 2` (repeat) events per-mapping using `repeat_delay_ms`, then
-   builds a `struct Packet` (consuming and clearing `pending_scan_code`) and
-   `sendto()`s it to that mapping's server.
+   builds a v3 key message (consuming `pending_scan_code`) and `sendto()`s
+   it to that mapping's server.
    **App buttons from hidraw** (e.g. the Fire TV remote's Netflix, Amazon
    Video, App Button, Amazon Music) never reach evdev: they're an array
    input report on a usage page hid-input doesn't turn into keys (Fire TV:
@@ -118,17 +139,29 @@ libc). The flow:
    Netflix, `A1` Amazon Video, `A3` App Button, `A4` Amazon Music), logged at
    TRACE. Needs the udev `hidraw` rule so the
    `input` group can read the node.
-5. **Wire format** — `struct Packet` (packed, 12 bytes):
-   - `header` (1 byte): upper 4 bits = `PACKET_FORMAT_VERSION`, lower 4
-     bits reserved. Bump the version and update both sides if you change
-     the layout below.
-   - `timestamp_ms` (4 bytes, network order): low 32 bits of a monotonic
-     ms clock.
-   - `key_code` (2 bytes, network order): the evdev key code.
-   - `scan_code` (4 bytes, network order): the raw `MSC_SCAN` value that
-     preceded this key event, or `0` if none was seen. Lets the gateway
-     disambiguate devices/buttons that share `KEY_UNKNOWN` (240).
-   - `value` (1 byte): `0` = up, `1` = down, `2` = repeat.
+5. **Wire format** — version 3, built by `packet.c` (big-endian):
+   - Prefix (6 bytes): `header` (upper 4 bits = `BRIDGE_PKT_VERSION`, lower
+     4 bits reserved 0), `timestamp_ms` (u32, low 32 bits of a monotonic ms
+     clock), `type` (u8: 1 = key, 2 = status).
+   - Key message (`type` 1, 13 bytes): `key_code` (u16, the evdev key
+     code), `scan_code` (u32, the raw `MSC_SCAN` value that preceded this
+     key event, or `0` — lets the gateway disambiguate buttons that share
+     `KEY_UNKNOWN` (240)), `value` (i8: `0` = up, `1` = down, `2` = repeat).
+     Down/up are sent `EDGE_REPEAT_COUNT` times.
+   - Status message (`type` 2, 12 bytes): `kind` (u8: 1 = connected, 2 =
+     disconnected, 3 = battery), `battery` (u8: 0–100, `0xFF` = unknown),
+     `session_ms` (u32: on disconnected, how long the connection lasted;
+     else 0). Sent once each, to the mapping's server: connected on attach,
+     disconnected on detach, battery when the level changes (at most once
+     per value per connection).
+   - Battery levels come from `bluez.c`: on attach of a Bluetooth device
+     (`uniq` is a `xx:xx:xx:xx:xx:xx` address) it reads
+     `org.bluez.Battery1.Percentage` from bluetoothd, and later changes
+     arrive as D-Bus signals matched to the mapping by address. It only
+     reads what bluetoothd already holds, never anything that makes the
+     radio talk to the remote, so it costs the remote no battery. If the
+     system bus is unavailable, status is still sent with battery unknown
+     and the bus is retried on the next attach.
 6. **Logging**: `log_print` / `LOG_ERROR|INFO|DEBUG|TRACE` macros print UTC
    timestamps to stdout (captured by journald/OpenRC, not written to a file
    directly by the program). Level is set via `LOG_LEVEL` in the config

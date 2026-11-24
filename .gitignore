@@ -58,3 +58,5 @@ remote_bridge
 /.idea/
 tests/test_hidraw
 tests/test_voice
+tests/test_packet
+tests/test_bridge

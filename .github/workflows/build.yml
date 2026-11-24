@@ -29,7 +29,15 @@ jobs:
       - name: Build
         run: |
           docker run --rm --platform ${{ matrix.platform }} \
+            -e SKIP_UNRESPONSIVE_BUS_TEST=${{ matrix.arch != 'amd64' && '1' || '' }} \
             -v "$PWD:/work" -w /work \
             alpine:latest \
-            sh -c "apk add --no-cache make gcc musl-dev linux-headers && \
-                   make VERSION=${GITHUB_SHA::7} && make test"
+            sh -c "apk add --no-cache make gcc musl-dev linux-headers basu-dev basu-static libcap-dev libcap-static pkgconf && \
+                   make VERSION=${GITHUB_SHA::7} CFLAGS='-static -O3 -Wall -Wextra' && make test"
+
+      - name: Keep the static binary
+        uses: actions/upload-artifact@v7
+        with:
+          name: remote_bridge-${{ matrix.arch }}
+          path: remote_bridge
+          retention-days: 14

@@ -3,7 +3,7 @@
 `remote_bridge` is a lightweight daemon (built for the Raspberry Pi Zero, but
 runs on any Linux box) that reads key events from an IR/Bluetooth remote
 control via `/dev/input` and forwards them as compact UDP packets to a
-server on your network. It handles hotplug automatically, so a remote can
+server on your network (wire format: see `AGENTS.md`). It handles hotplug automatically, so a remote can
 disconnect and reconnect without restarting the service.
 
 This repo is the **sender** half of a pair. The **receiver** — the service
@@ -84,9 +84,14 @@ tail -f /var/log/remote-bridge.log
 ## Building from Source
 
 ### 1. Build the Application
+Needs `gcc`, `make`, `pkg-config` and basu (the D-Bus library used to read
+remote battery levels). On Alpine:
 ```bash
+apk add make gcc musl-dev linux-headers basu-dev basu-static libcap-dev libcap-static pkgconf
 make
 ```
+If your distribution doesn't package basu, use the pre-built packages, or
+build in an Alpine container (see `AGENTS.md`).
 
 ### 2. Find Your Remote Name
 Run evtest to find your IR receiver's exact name:
@@ -282,6 +287,18 @@ sudo rm -f /etc/remote-bridge.conf
 make uninstall
 sudo rm -f /etc/remote-bridge.conf
 ```
+
+## Battery and Connection Status
+
+Alongside key presses, the bridge tells the gateway when each remote
+connects and disconnects (with how long the connection lasted) and, for
+Bluetooth remotes that report it, the battery level. Nothing to configure.
+
+The battery level is the one the Pi's Bluetooth service (`bluetoothd`)
+already reads when the remote connects; the bridge only asks bluetoothd for
+it over the system D-Bus, so it never wakes the remote or costs it battery.
+`bluetoothctl info <address>` shows the same value. The bridge logs each
+report, e.g. `Status "AR Keyboard": connected (battery 39%)`.
 
 ## Voice Remotes
 

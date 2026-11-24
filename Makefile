@@ -5,26 +5,40 @@ CC = gcc
 DEFS = -DVERSION=\"$(VERSION)\"
 CFLAGS ?= -O3 -Wall -Wextra
 TARGET = remote_bridge
-SOURCE = remote_bridge.c voice.c
+SOURCE = remote_bridge.c voice.c packet.c bluez.c
+HEADERS = voice.h packet.h log.h bluez.h
+# basu (sd-bus) for reading battery levels from BlueZ; linked statically in releases
+BASU_CFLAGS := $(shell pkg-config --cflags basu)
+BASU_LIBS := $(shell pkg-config --static --libs basu)
 TEST_BIN = tests/test_voice
+PACKET_TEST = tests/test_packet
+BRIDGE_TEST = tests/test_bridge
 
 .PHONY: all clean test install uninstall
 
 all: $(TARGET)
 
-$(TARGET): $(SOURCE) voice.h
-	$(CC) $(CFLAGS) $(DEFS) -o $(TARGET) $(SOURCE)
+$(TARGET): $(SOURCE) $(HEADERS)
+	$(CC) $(CFLAGS) $(BASU_CFLAGS) $(DEFS) -o $(TARGET) $(SOURCE) $(BASU_LIBS)
 
-test: tests/test_hidraw.c $(SOURCE) voice.h $(TEST_BIN)
-	$(CC) $(CFLAGS) -Wno-unused-function $(DEFS) -o tests/test_hidraw tests/test_hidraw.c voice.c
+test: tests/test_hidraw.c $(SOURCE) $(HEADERS) $(TEST_BIN) $(PACKET_TEST) $(BRIDGE_TEST)
+	$(CC) $(CFLAGS) $(BASU_CFLAGS) -Wno-unused-function $(DEFS) -o tests/test_hidraw tests/test_hidraw.c voice.c packet.c bluez.c $(BASU_LIBS)
 	./tests/test_hidraw
 	./$(TEST_BIN)
+	./$(PACKET_TEST)
+	./$(BRIDGE_TEST)
 
 $(TEST_BIN): tests/test_voice.c voice.c voice.h
 	$(CC) $(CFLAGS) -o $(TEST_BIN) tests/test_voice.c voice.c
 
+$(PACKET_TEST): tests/test_packet.c packet.c packet.h
+	$(CC) $(CFLAGS) -o $(PACKET_TEST) tests/test_packet.c packet.c
+
+$(BRIDGE_TEST): tests/test_bridge.c $(SOURCE) $(HEADERS)
+	$(CC) $(CFLAGS) $(BASU_CFLAGS) -Wno-unused-function $(DEFS) -o $(BRIDGE_TEST) tests/test_bridge.c voice.c packet.c bluez.c $(BASU_LIBS)
+
 clean:
-	rm -f $(TARGET) tests/test_hidraw $(TEST_BIN)
+	rm -f $(TARGET) tests/test_hidraw $(TEST_BIN) $(PACKET_TEST) $(BRIDGE_TEST)
 
 install: $(TARGET)
 	@echo "Installing remote_bridge..."
