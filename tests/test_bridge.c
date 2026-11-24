@@ -163,6 +163,14 @@ static void test_battery_signal_routes_by_address(void) {
 /* A bus that accepts the connection but never answers must not stall the
  * main loop for long: bluez_open gives up within the call timeout. */
 static void test_bluez_unresponsive_bus(void) {
+    /* Under QEMU user emulation getsockopt(SO_PEERGROUPS) keeps failing with
+     * ERANGE without reporting the size it needs, and sd-bus retries forever
+     * once a connection succeeds. CI sets this for its emulated arches. */
+    const char *skip = getenv("SKIP_UNRESPONSIVE_BUS_TEST");
+    if (skip && *skip) {
+        printf("skipped unresponsive-bus test (SKIP_UNRESPONSIVE_BUS_TEST)\n");
+        return;
+    }
     const char *sock_path = "/tmp/test_bridge_silent_bus";
     unlink(sock_path);
     int lfd = socket(AF_UNIX, SOCK_STREAM, 0);
